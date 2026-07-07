@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.11
+
+- Add AsciiConsoleRenderer, FrigateSnapshotClient, JarLevelDetector, and Worker classes
+
 ## 0.1.10
 
 - Refactor Dockerfile and .dockerignore for improved file handling
