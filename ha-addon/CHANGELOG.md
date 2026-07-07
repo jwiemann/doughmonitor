@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.9
+
+- Refactor Dockerfile and run.sh for improved build process; add .dockerignore
+
 ## 0.1.8
 
 - Refactor MQTT and Frigate options for improved configuration handling
