@@ -1,0 +1,33 @@
+name: Sourdough Monitor
+version: "1.0.0"
+slug: sourdough_monitor
+description: Monitor sourdough rise from Frigate camera snapshots with MQTT discovery
+arch:
+  - armhf
+  - armv7
+  - aarch64
+  - amd64
+  - i386
+startup: application
+boot: auto
+host_network: true
+options:
+  frigate_base_url: "http://homeassistant.local:8123"
+  frigate_camera: "battery_cam"
+  frigate_access_token: ""
+  frigate_sample_interval_minutes: 10
+  mqtt_host: "core-mosquitto"
+  mqtt_port: 1883
+  mqtt_username: ""
+  mqtt_password: ""
+  mqtt_device_id: "sourdough_monitor"
+schema:
+  frigate_base_url: str
+  frigate_camera: str
+  frigate_access_token: password
+  frigate_sample_interval_minutes: int(1,60)
+  mqtt_host: str
+  mqtt_port: int(1,65535)
+  mqtt_username: str
+  mqtt_password: password
+  mqtt_device_id: str

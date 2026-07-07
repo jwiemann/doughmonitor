@@ -1,0 +1,21 @@
+bin/
+obj/
+.git/
+.gitignore
+.dockerignore
+.vs/
+.vscode/
+.idea/
+**/*.py
+latest_snapshot.jpg
+latest_snapshot.tmp
+debug/
+README.md
+AGENTS.md
+
+# Keep only what's needed for the build:
+!*.cs
+!*.csproj
+!*.sln
+!appsettings.json
+!Dockerfile

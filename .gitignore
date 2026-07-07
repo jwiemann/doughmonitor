@@ -1,0 +1,29 @@
+# .NET build artifacts
+bin/
+obj/
+
+# IDE files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln.docstates
+
+# User-specific config with secrets
+appsettings.json
+
+# Debug snapshot images (privacy-sensitive)
+debug/
+latest_snapshot.jpg
+latest_snapshot.tmp
+
+# State persistence files
+sourdough_state.json
+
+# Python scratch files (development helpers, not part of the project)
+*.py
+
+# OS files
+Thumbs.db
+.DS_Store
