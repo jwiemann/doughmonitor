@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.10
+
+- Refactor Dockerfile and .dockerignore for improved file handling
+
 ## 0.1.9
 
 - Refactor Dockerfile and run.sh for improved build process; add .dockerignore
