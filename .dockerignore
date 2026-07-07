@@ -13,9 +13,7 @@ debug/
 README.md
 AGENTS.md
 
-# Keep only what's needed for the build:
-!*.cs
-!*.csproj
-!*.sln
-!appsettings.json
-!Dockerfile
+SourdoughMonitor.Tests/
+
+# Allow ha-addon/run.sh for the add-on Dockerfile:
+!ha-addon/run.sh

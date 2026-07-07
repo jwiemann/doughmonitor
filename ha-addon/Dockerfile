@@ -4,6 +4,7 @@ ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:bookworm
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY SourdoughMonitor.csproj .
+COPY Directory.Build.props .
 RUN dotnet restore
 COPY . .
 RUN dotnet publish -c Release -o /app
@@ -21,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY --from=build /app .
-COPY run.sh .
+COPY ha-addon/run.sh /app/run.sh
 RUN chmod a+x /app/run.sh \
     && mkdir -p /etc/services.d/sourdough \
     && ln -s /app/run.sh /etc/services.d/sourdough/run
