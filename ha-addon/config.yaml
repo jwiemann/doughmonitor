@@ -1,5 +1,5 @@
 name: Sourdough Monitor
-version: "0.1.0"
+version: "0.1.1"
 slug: sourdough_monitor
 description: Monitor sourdough rise from Frigate camera snapshots with MQTT discovery
 arch:
@@ -10,7 +10,7 @@ arch:
   - i386
 startup: application
 boot: auto
-init: false
+init: true
 host_network: true
 options:
   frigate_base_url: "http://homeassistant.local:8123"
