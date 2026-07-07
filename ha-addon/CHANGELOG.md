@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- Update version to 0.1.6 and add changelog entry
+
 ## 0.1.6
 
 - Add pre-commit hook for automatic version bumping and changelog update
