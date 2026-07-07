@@ -13,6 +13,6 @@ WORKDIR /app
 # Copy published app from host or CI build context
 COPY . .
 
-RUN chmod a+x /app/ha-addon/run.sh
+RUN chmod a+x /app/run.sh
 
-ENTRYPOINT ["/app/ha-addon/run.sh"]
+ENTRYPOINT ["/app/run.sh"]

@@ -10,6 +10,7 @@ arch:
   - i386
 startup: application
 boot: auto
+init: false
 host_network: true
 options:
   frigate_base_url: "http://homeassistant.local:8123"
