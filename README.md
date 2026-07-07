@@ -1,6 +1,6 @@
 # 🥖 Sourdough Monitor
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=jwiemann&repository=DoughMonitor&category=add-on)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=jwiemann&repository=doughmonitor&category=add-on)
 
 Monitor sourdough starter rise from Frigate camera snapshots, publish readings to Home Assistant via MQTT discovery.
 
@@ -27,7 +27,7 @@ Monitor sourdough starter rise from Frigate camera snapshots, publish readings t
 
 1. Add this repository to your Home Assistant add-on store:
    - **Settings → Add-ons → Add-on store → ⋮ → Repositories**
-   - Paste `https://github.com/jwiemann/DoughMonitor`
+   - Paste `https://github.com/jwiemann/doughmonitor`
    - Or click the badge above.
 
 2. Install the **Sourdough Monitor** add-on.
