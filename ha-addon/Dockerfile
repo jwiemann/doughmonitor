@@ -1,29 +1,34 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:bookworm
-
 # Build stage
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
-COPY SourdoughMonitor.csproj .
-COPY Directory.Build.props .
-RUN dotnet restore
-COPY . .
-RUN dotnet publish -c Release -o /app
+COPY ha-addon/SourdoughMonitor.csproj .
+COPY ha-addon/Directory.Build.props .
+RUN dotnet restore -r linux-x64
+COPY ha-addon/ .
+RUN dotnet publish -c Release -r linux-x64 --self-contained true -o /app
 
-# Runtime stage
-FROM $BUILD_FROM
+# Runtime stage: Ubuntu 22.04 (jammy) - matches the ABI the official
+# OpenCvSharp native library was built against (glibc 2.35, ffmpeg 4.4,
+# tesseract 4, OpenEXR 2.5, GTK2).
+FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        wget ca-certificates \
-    && wget https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb \
-    && dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        dotnet-runtime-10.0 \
+        ca-certificates \
+        libtesseract4 libgtk2.0-0 libdc1394-25 \
+        libavcodec58 libavformat58 libswscale5 \
+        libjpeg-turbo8 libtiff5 libopenjp2-7 libopenexr25 \
         libfontconfig1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=build /app .
-COPY run.sh /app/run.sh
-RUN chmod a+x /app/run.sh \
-    && mkdir -p /etc/services.d/sourdough \
-    && ln -s /app/run.sh /etc/services.d/sourdough/run \
-    && cp -r /app/runtimes/linux-x64/native/*.so* /usr/lib/ 2>/dev/null; ldconfig
+
+# Verify all native dependencies are resolvable; fail the build otherwise.
+# Note: with a self-contained publish the native lib sits in the app root.
+RUN missing=$(ldd /app/libOpenCvSharpExtern.so | grep "not found" || true); \
+    if [ -n "$missing" ]; then \
+        echo "ERROR: unresolved native dependencies:" >&2; \
+        echo "$missing" >&2; \
+        exit 1; \
+    fi
+
+ENTRYPOINT ["/app/SourdoughMonitor"]
