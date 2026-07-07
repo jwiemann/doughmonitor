@@ -25,6 +25,7 @@ public sealed class MqttOptions
     public string? Password { get; set; }
     public string DeviceId { get; init; } = "sourdough_monitor";
     public string DiscoveryPrefix { get; init; } = "homeassistant";
+    public bool DebugMode { get; init; }
 }
 
 public sealed class AnalysisOptions

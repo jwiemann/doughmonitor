@@ -3,6 +3,7 @@ using MQTTnet;
 using MQTTnet.Client;
 using SourdoughMonitor.Analysis;
 using SourdoughMonitor.Config;
+using SourdoughMonitor.Vision;
 
 namespace SourdoughMonitor.Mqtt;
 
@@ -15,6 +16,8 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
     private string StateTopic => $"{options.DeviceId}/state";
     private string AvailabilityTopic => $"{options.DeviceId}/availability";
     public string ResetCommandTopic => $"{options.DeviceId}/cmd/reset";
+    private string DebugImageTopic => $"{options.DeviceId}/debug_image";
+    private string DiagnosticsTopic => $"{options.DeviceId}/diagnostics";
 
     public event Func<Task>? ResetRequested;
 
@@ -61,6 +64,34 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
     public Task PublishUnavailableMeasurementAsync(CancellationToken ct) =>
         PublishAsync($"{options.DeviceId}/measurement_status", "no_reading", retain: false, ct);
 
+    public async Task PublishDebugImageAsync(byte[] jpegBytes, CancellationToken ct)
+    {
+        if (!options.DebugMode || jpegBytes.Length == 0) return;
+        await PublishRawAsync(DebugImageTopic, jpegBytes, retain: false, ct);
+    }
+
+    public async Task PublishDetectionDiagnosticsAsync(
+        JarLevelDetector.DetectionDiagnostics? diagnostics,
+        LevelMeasurement? measurement,
+        CancellationToken ct)
+    {
+        if (!options.DebugMode) return;
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            method = diagnostics?.Method ?? "none",
+            band_contrast = diagnostics?.BandContrast ?? 0,
+            band_top_row = diagnostics?.BandTopRow,
+            final_row = diagnostics?.FinalRow,
+            dough_top_px = measurement?.DoughTopPx,
+            jar_bottom_px = measurement?.JarBottomPx,
+            jar_height_px = measurement is not null ? (double?)(measurement.JarBottomPx - measurement.JarTopPx) : null,
+            dough_height_px = measurement?.DoughHeightPx
+        }, JsonOpts);
+
+        await PublishAsync(DiagnosticsTopic, payload, retain: true, ct);
+    }
+
     private async Task PublishDiscoveryAsync(CancellationToken ct)
     {
         var device = new
@@ -71,10 +102,10 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             model = "JarWatch 1.0"
         };
 
-        await PublishSensorConfigAsync("rise_percent", "Starter Rise", "%", "{{ value_json.rise_percent }}", device, ct);
-        await PublishSensorConfigAsync("rise_rate", "Starter Rise Rate", "%/h", "{{ value_json.rise_rate }}", device, ct);
-        await PublishSensorConfigAsync("predicted_peak_percent", "Predicted Peak Rise", "%", "{{ value_json.predicted_peak_percent }}", device, ct);
-        await PublishSensorConfigAsync("peak_eta", "Peak ETA", null, "{{ value_json.peak_eta }}", device, ct, deviceClass: "timestamp");
+        await PublishSensorConfigAsync("rise_percent", "Starter Rise", "%", "{{ value_json.rise_percent }}", device, ct, stateTopicOverride: StateTopic);
+        await PublishSensorConfigAsync("rise_rate", "Starter Rise Rate", "%/h", "{{ value_json.rise_rate }}", device, ct, stateTopicOverride: StateTopic);
+        await PublishSensorConfigAsync("predicted_peak_percent", "Predicted Peak Rise", "%", "{{ value_json.predicted_peak_percent }}", device, ct, stateTopicOverride: StateTopic);
+        await PublishSensorConfigAsync("peak_eta", "Peak ETA", null, "{{ value_json.peak_eta }}", device, ct, deviceClass: "timestamp", stateTopicOverride: StateTopic);
 
         var binaryConfig = JsonSerializer.Serialize(new
         {
@@ -96,28 +127,75 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             device
         }, JsonOpts);
         await PublishAsync($"{options.DiscoveryPrefix}/button/{options.DeviceId}/reset/config", buttonConfig, retain: true, ct);
+
+        if (options.DebugMode)
+        {
+            await PublishDebugDiscoveryAsync(device, ct);
+        }
+    }
+
+    private async Task PublishDebugDiscoveryAsync(object device, CancellationToken ct)
+    {
+        var cameraConfig = JsonSerializer.Serialize(new
+        {
+            name = "Debug Image",
+            unique_id = $"{options.DeviceId}_debug_image",
+            topic = DebugImageTopic,
+            availability_topic = AvailabilityTopic,
+            device
+        }, JsonOpts);
+        await PublishAsync($"{options.DiscoveryPrefix}/camera/{options.DeviceId}/debug_image/config", cameraConfig, retain: true, ct);
+
+        await PublishSensorConfigAsync("detection_method", "Detection Method", null,
+            "{{ value_json.method }}", device, ct,
+            entityCategory: "diagnostic");
+        await PublishSensorConfigAsync("band_contrast", "Band Contrast", null,
+            "{{ value_json.band_contrast }}", device, ct,
+            entityCategory: "diagnostic");
+        await PublishSensorConfigAsync("dough_top_px", "Dough Top", "px",
+            "{{ value_json.dough_top_px }}", device, ct,
+            entityCategory: "diagnostic");
+        await PublishSensorConfigAsync("jar_bottom_px", "Jar Bottom", "px",
+            "{{ value_json.jar_bottom_px }}", device, ct,
+            entityCategory: "diagnostic");
+        await PublishSensorConfigAsync("jar_height_px", "Jar Height", "px",
+            "{{ value_json.jar_height_px }}", device, ct,
+            entityCategory: "diagnostic");
+        await PublishSensorConfigAsync("dough_height_px", "Dough Height", "px",
+            "{{ value_json.dough_height_px }}", device, ct,
+            entityCategory: "diagnostic");
     }
 
     private async Task PublishSensorConfigAsync(
         string key, string name, string? unit, string template, object device,
-        CancellationToken ct, string? deviceClass = null)
+        CancellationToken ct, string? deviceClass = null, string? entityCategory = null,
+        string? stateTopicOverride = null)
     {
-        var config = JsonSerializer.Serialize(new
+        var config = new Dictionary<string, object?>
         {
-            name,
-            unique_id = $"{options.DeviceId}_{key}",
-            state_topic = StateTopic,
-            value_template = template,
-            unit_of_measurement = unit,
-            device_class = deviceClass,
-            availability_topic = AvailabilityTopic,
-            device
-        }, JsonOpts);
+            ["name"] = name,
+            ["unique_id"] = $"{options.DeviceId}_{key}",
+            ["state_topic"] = stateTopicOverride ?? DiagnosticsTopic,
+            ["value_template"] = template,
+            ["availability_topic"] = AvailabilityTopic,
+            ["device"] = device
+        };
+        if (unit is not null) config["unit_of_measurement"] = unit;
+        if (deviceClass is not null) config["device_class"] = deviceClass;
+        if (entityCategory is not null) config["entity_category"] = entityCategory;
 
-        await PublishAsync($"{options.DiscoveryPrefix}/sensor/{options.DeviceId}/{key}/config", config, retain: true, ct);
+        await PublishAsync($"{options.DiscoveryPrefix}/sensor/{options.DeviceId}/{key}/config",
+            JsonSerializer.Serialize(config, JsonOpts), retain: true, ct);
     }
 
     private Task PublishAsync(string topic, string payload, bool retain, CancellationToken ct) =>
+        _client.PublishAsync(new MqttApplicationMessageBuilder()
+            .WithTopic(topic)
+            .WithPayload(payload)
+            .WithRetainFlag(retain)
+            .Build(), ct);
+
+    private Task PublishRawAsync(string topic, byte[] payload, bool retain, CancellationToken ct) =>
         _client.PublishAsync(new MqttApplicationMessageBuilder()
             .WithTopic(topic)
             .WithPayload(payload)

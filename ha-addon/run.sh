@@ -16,8 +16,9 @@ export Monitor__Frigate__SampleIntervalMinutes="$(jq -r '.frigate_sample_interva
 export Monitor__Mqtt__DeviceId="$(jq -r '.mqtt_device_id' "$CONFIG_PATH")"
 export Monitor__Mqtt__DiscoveryPrefix="homeassistant"
 
-# --- Suppress console rendering (no terminal in HA add-on) ---
-export Monitor__Vision__DebugSaveAnnotatedImages="false"
+# --- Debug mode (annotated images + MQTT camera) ---
+export Monitor__Vision__DebugSaveAnnotatedImages="$(jq -r '.debug_enabled' "$CONFIG_PATH")"
+export Monitor__Mqtt__DebugMode="$(jq -r '.debug_enabled' "$CONFIG_PATH")"
 
 # --- OpenCvSharp native libraries ---
 export LD_LIBRARY_PATH="/app/runtimes/linux-x64/native${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

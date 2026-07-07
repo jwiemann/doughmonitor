@@ -87,6 +87,14 @@ public sealed class Worker(
 
         consoleRenderer.SetMeasurement(measurement);
         consoleRenderer.SetDetectionDiagnostics(detector.LastDiagnostics);
+
+        // Publish debug image and diagnostics via MQTT when debug mode is enabled
+        if (options.Mqtt.DebugMode && detector.LatestAnnotatedImageBytes is not null)
+        {
+            await mqtt.PublishDebugImageAsync(detector.LatestAnnotatedImageBytes, ct);
+            await mqtt.PublishDetectionDiagnosticsAsync(detector.LastDiagnostics, measurement, ct);
+        }
+
         if (measurement is null)
         {
             await mqtt.PublishUnavailableMeasurementAsync(ct);

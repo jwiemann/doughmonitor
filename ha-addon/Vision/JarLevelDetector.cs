@@ -12,11 +12,14 @@ namespace SourdoughMonitor.Vision;
 /// thresholds derive from frame intensity, wall length from frame size.</summary>
 public sealed class JarLevelDetector(VisionOptions options)
 {
-    /// <summary>Minimum mean-gray-level contrast between the region directly above a dark band
-    /// and the band interior for the band to be trusted over the edge-energy method.</summary>
-    private const double MinStepContrast = 15.0;
+/// <summary>Minimum mean-gray-level contrast between the region directly above a dark band
+/// and the band interior for the band to be trusted over the edge-energy method.</summary>
+private const double MinStepContrast = 15.0;
 
-    public DetectionDiagnostics? LastDiagnostics { get; private set; }
+public DetectionDiagnostics? LastDiagnostics { get; private set; }
+
+/// <summary>JPEG bytes of the most recently annotated debug image, or null if none yet.</summary>
+public byte[]? LatestAnnotatedImageBytes { get; private set; }
 
     public sealed record DetectionDiagnostics(
         string Method,
@@ -168,7 +171,6 @@ public sealed class JarLevelDetector(VisionOptions options)
 
     private void SaveDebugImage(Mat image, JarColumn? jarColumn, int? doughSurfaceY, DateTimeOffset now)
     {
-        if (!options.DebugSaveAnnotatedImages) return;
         using var color = new Mat();
         Cv2.CvtColor(image, color, ColorConversionCodes.GRAY2BGR);
         if (jarColumn is not null)
@@ -193,10 +195,17 @@ public sealed class JarLevelDetector(VisionOptions options)
                 new Point(color.Width, doughSurfaceY.Value),
                 Scalar.Red,
                 2);
-        var directory = Path.Combine(AppContext.BaseDirectory, options.DebugOutputDirectory);
-        Directory.CreateDirectory(directory);
-        var fileName = $"{now:yyyyMMdd_HHmmssfff}.jpg";
-        Cv2.ImWrite(Path.Combine(directory, fileName), color);
+
+        Cv2.ImEncode(".jpg", color, out var bytes);
+        LatestAnnotatedImageBytes = bytes;
+
+        if (options.DebugSaveAnnotatedImages)
+        {
+            var directory = Path.Combine(AppContext.BaseDirectory, options.DebugOutputDirectory);
+            Directory.CreateDirectory(directory);
+            var fileName = $"{now:yyyyMMdd_HHmmssfff}.jpg";
+            Cv2.ImWrite(Path.Combine(directory, fileName), color);
+        }
     }
 
     private int? FindDoughSurface(Mat columnEdges, Mat columnGray)
