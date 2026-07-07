@@ -1,15 +1,14 @@
 # Build stage
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
-COPY ha-addon/SourdoughMonitor.csproj .
-COPY ha-addon/Directory.Build.props .
+COPY SourdoughMonitor.csproj .
+COPY Directory.Build.props .
 RUN dotnet restore -r linux-x64
-COPY ha-addon/ .
+COPY . .
 RUN dotnet publish -c Release -r linux-x64 --self-contained true -o /app
 
-# Runtime stage: Ubuntu 22.04 (jammy) - matches the ABI the official
-# OpenCvSharp native library was built against (glibc 2.35, ffmpeg 4.4,
-# tesseract 4, OpenEXR 2.5, GTK2).
+# Runtime stage: Ubuntu 22.04 (jammy) - matches the ABI of the official
+# OpenCvSharp native library (glibc 2.35, ffmpeg 4.4, tesseract 4, OpenEXR 2.5).
 FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -22,8 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=build /app .
 
-# Verify all native dependencies are resolvable; fail the build otherwise.
-# Note: with a self-contained publish the native lib sits in the app root.
 RUN missing=$(ldd /app/libOpenCvSharpExtern.so | grep "not found" || true); \
     if [ -n "$missing" ]; then \
         echo "ERROR: unresolved native dependencies:" >&2; \
