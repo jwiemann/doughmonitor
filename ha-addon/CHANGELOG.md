@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.21
+
+- Refactor growth analysis and remove console rendering
+
 ## 0.1.20
 
 - Add debug mode support and related MQTT publishing features
