@@ -17,7 +17,7 @@ newver="${major}.${minor}.${newpatch}"
 
 sed -i "s/version: \"$ver\"/version: \"$newver\"/" "$CONFIG"
 
-entry="\n## $newver\n"
+entry="\n## $newver\n\n- \n"
 awk -v e="$entry" 'NR==1{print; printf e; next} 1' "$CHANGELOG" > "${CHANGELOG}.tmp" \
   && mv "${CHANGELOG}.tmp" "$CHANGELOG"
 
