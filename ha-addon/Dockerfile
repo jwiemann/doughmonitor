@@ -1,7 +1,7 @@
-ARG BUILD_FROM=mcr.microsoft.com/dotnet/aspnet:8.0-alpine
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.18
 FROM $BUILD_FROM
 
-# Install .NET 8 runtime
+# Install .NET 8 runtime (from Alpine community repo)
 RUN apk add --no-cache \
         dotnet-aspnet8 \
         libgdiplus \

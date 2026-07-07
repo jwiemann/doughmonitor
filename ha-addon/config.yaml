@@ -1,5 +1,5 @@
 name: Sourdough Monitor
-version: "1.0.0"
+version: "0.1.0"
 slug: sourdough_monitor
 description: Monitor sourdough rise from Frigate camera snapshots with MQTT discovery
 arch:
