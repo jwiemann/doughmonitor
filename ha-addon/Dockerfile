@@ -15,4 +15,4 @@ COPY . .
 
 RUN chmod a+x /app/run.sh
 
-ENTRYPOINT ["/app/run.sh"]
+CMD ["/app/run.sh"]
