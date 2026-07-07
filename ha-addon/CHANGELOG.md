@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.20
+
+- Add debug mode support and related MQTT publishing features
+
 ## 0.1.19
 
 - Update run.sh to execute SourdoughMonitor directly
