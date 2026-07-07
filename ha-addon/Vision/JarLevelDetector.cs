@@ -40,7 +40,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             var measurement = MeasureWithinColumn(edges, img, jarColumn, now);
             if (measurement is not null) return measurement;
         }
-        // Pass 2: walls invisible (transparent container / box filling the frame).
+        // Pass 2: walls invisible (transparent container / box filling the frame)
         // Use the full frame (minus a border margin) as the column.
         foreach (var relaxation in new[] { 1.0, 0.6 })
         {
