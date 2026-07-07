@@ -1,6 +1,6 @@
 # 🥖 Sourdough Monitor
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=jwiemann&repository=doughmonitor&category=add-on)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https://github.com/jwiemann/doughmonitor)
 
 Monitor sourdough starter rise from Frigate camera snapshots, publish readings to Home Assistant via MQTT discovery.
 
