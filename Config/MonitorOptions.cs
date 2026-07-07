@@ -10,19 +10,19 @@ public sealed class MonitorOptions
 
 public sealed class FrigateOptions
 {
-    public required string BaseUrl { get; init; }
     public required string Camera { get; init; }
     public string? SnapshotUrl { get; init; }
+    public string? BaseUrl { get; init; }
     public string? AccessToken { get; init; }
     public int SampleIntervalMinutes { get; init; } = 10;
 }
 
 public sealed class MqttOptions
 {
-    public required string Host { get; init; }
-    public int Port { get; init; } = 1883;
-    public string? Username { get; init; }
-    public string? Password { get; init; }
+    public string Host { get; set; } = "localhost";
+    public int Port { get; set; } = 1883;
+    public string? Username { get; set; }
+    public string? Password { get; set; }
     public string DeviceId { get; init; } = "sourdough_monitor";
     public string DiscoveryPrefix { get; init; } = "homeassistant";
 }

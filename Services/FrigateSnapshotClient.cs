@@ -5,11 +5,18 @@ namespace SourdoughMonitor.Services;
 
 public sealed class FrigateSnapshotClient(HttpClient http, FrigateOptions options)
 {
+    private static readonly string? SupervisorToken = Environment.GetEnvironmentVariable("SUPERVISOR_TOKEN");
+
     public async Task<byte[]?> GetLatestSnapshotAsync(CancellationToken ct)
     {
         var url = ResolveSnapshotUrl();
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        if (!string.IsNullOrWhiteSpace(options.AccessToken))
+
+        if (SupervisorToken is not null)
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", SupervisorToken);
+        }
+        else if (!string.IsNullOrWhiteSpace(options.AccessToken))
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.AccessToken);
         }
@@ -39,11 +46,9 @@ public sealed class FrigateSnapshotClient(HttpClient http, FrigateOptions option
         }
         catch (IOException) when (ct.IsCancellationRequested is false)
         {
-            // Snapshot retrieval is still successful even if local persistence fails.
         }
         catch (UnauthorizedAccessException) when (ct.IsCancellationRequested is false)
         {
-            // Snapshot retrieval is still successful even if local persistence fails.
         }
 
         return bytes;
@@ -56,7 +61,19 @@ public sealed class FrigateSnapshotClient(HttpClient http, FrigateOptions option
             return options.SnapshotUrl;
         }
 
-        var baseUrl = options.BaseUrl.TrimEnd('/');
-        return $"{baseUrl}/api/{options.Camera}/latest.jpg?quality=90&height=1080&width=1920";
+        if (SupervisorToken is not null)
+        {
+            return $"http://supervisor/core/api/camera_proxy/camera.{options.Camera}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.BaseUrl))
+        {
+            var baseUrl = options.BaseUrl.TrimEnd('/');
+            return $"{baseUrl}/api/{options.Camera}/latest.jpg?quality=90&height=1080&width=1920";
+        }
+
+        throw new InvalidOperationException(
+            "No snapshot URL configured. Set SUPERVISOR_TOKEN for addon mode, " +
+            "or configure Frigate:BaseUrl (or Frigate:SnapshotUrl) in appsettings for local dev.");
     }
 }
