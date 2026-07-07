@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.8
+
+- Refactor MQTT and Frigate options for improved configuration handling
+
 ## 0.1.7
 
 - Update version to 0.1.6 and add changelog entry
