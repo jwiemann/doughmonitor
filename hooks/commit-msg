@@ -13,7 +13,14 @@ if [ -z "$msg_file" ] || [ ! -f "$msg_file" ]; then
   exit 0
 fi
 
-ver=$(grep -oP 'version: "\K[^"]+' "$CONFIG") || exit 1
+# Skip if the last commit already bumped the version (avoids re-trigger loop)
+last_ver=$(git show HEAD:ha-addon/config.yaml 2>/dev/null | grep -oP 'version: "\K[^"]+')
+current_ver=$(grep -oP 'version: "\K[^"]+' "$CONFIG") || exit 1
+if [ "$last_ver" != "$current_ver" ]; then
+  exit 0
+fi
+
+ver="$current_ver"
 
 major="${ver%%.*}"; rest="${ver#*.}"
 minor="${rest%.*}";  patch="${rest##*.}"
