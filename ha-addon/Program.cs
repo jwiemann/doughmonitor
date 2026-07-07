@@ -9,8 +9,8 @@ using SourdoughMonitor.Vision;
 
 var builder = Host.CreateApplicationBuilder(args);
 
-builder.Logging.ClearProviders();
-builder.Logging.SetMinimumLevel(LogLevel.Critical);
+builder.Logging.AddConsole();
+builder.Logging.SetMinimumLevel(LogLevel.Information);
 
 var options = builder.Configuration.GetSection("Monitor").Get<MonitorOptions>()
     ?? throw new InvalidOperationException("Missing 'Monitor' configuration section");
