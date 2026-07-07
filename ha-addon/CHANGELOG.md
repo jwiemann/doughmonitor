@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.18
+
+- Update Dockerfile and run.sh for improved script execution
+
 ## 0.1.17
 
 - Refactor Dockerfile for improved path handling and comments
