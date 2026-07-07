@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY --from=build /app .
-COPY ha-addon/run.sh /app/run.sh
+COPY run.sh /app/run.sh
 RUN chmod a+x /app/run.sh \
     && mkdir -p /etc/services.d/sourdough \
     && ln -s /app/run.sh /etc/services.d/sourdough/run

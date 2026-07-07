@@ -17,7 +17,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\SourdoughMonitor.csproj" />
+    <ProjectReference Include="..\ha-addon\SourdoughMonitor.csproj" />
   </ItemGroup>
 
 </Project>

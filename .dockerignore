@@ -12,8 +12,5 @@ latest_snapshot.tmp
 debug/
 README.md
 AGENTS.md
-
 SourdoughMonitor.Tests/
-
-# Allow ha-addon/run.sh for the add-on Dockerfile:
-!ha-addon/run.sh
+.kilo/
