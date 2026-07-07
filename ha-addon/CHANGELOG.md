@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.17
+
+- Refactor Dockerfile for improved path handling and comments
+
 ## 0.1.16
 
 - Refactor Dockerfile for improved build and runtime stages
