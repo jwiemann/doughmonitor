@@ -25,4 +25,5 @@ COPY --from=build /app .
 COPY run.sh /app/run.sh
 RUN chmod a+x /app/run.sh \
     && mkdir -p /etc/services.d/sourdough \
-    && ln -s /app/run.sh /etc/services.d/sourdough/run
+    && ln -s /app/run.sh /etc/services.d/sourdough/run \
+    && cp -r /app/runtimes/linux-x64/native/*.so* /usr/lib/ 2>/dev/null; ldconfig
