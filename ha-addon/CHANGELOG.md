@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.15
+
+- Fix comment formatting in JarLevelDetector
+
 ## 0.1.14
 
 - Add native library copy command to Dockerfile
