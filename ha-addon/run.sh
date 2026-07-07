@@ -20,4 +20,4 @@ export Monitor__Mqtt__DiscoveryPrefix="homeassistant"
 export Monitor__Vision__DebugSaveAnnotatedImages="false"
 
 cd /app
-exec dotnet SourdoughMonitor.dll
+exec dotnet /app/SourdoughMonitor.dll

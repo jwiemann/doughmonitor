@@ -1,6 +1,15 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:bookworm
-FROM $BUILD_FROM
 
+# Build stage
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+COPY SourdoughMonitor.csproj .
+RUN dotnet restore
+COPY . .
+RUN dotnet publish -c Release -o /app
+
+# Runtime stage
+FROM $BUILD_FROM
 RUN apt-get update && apt-get install -y --no-install-recommends \
         wget ca-certificates \
     && wget https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb \
@@ -11,7 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY . .
+COPY --from=build /app .
+COPY run.sh .
 RUN chmod a+x /app/run.sh \
     && mkdir -p /etc/services.d/sourdough \
     && ln -s /app/run.sh /etc/services.d/sourdough/run
