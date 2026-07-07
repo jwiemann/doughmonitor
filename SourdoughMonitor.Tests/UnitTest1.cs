@@ -1,6 +1,5 @@
 ﻿using SourdoughMonitor.Analysis;
 using SourdoughMonitor.Config;
-using SourdoughMonitor.Services;
 using SourdoughMonitor.Vision;
 using Xunit;
 
@@ -8,17 +7,6 @@ namespace SourdoughMonitor.Tests;
 
 public class RiseAnalyzerTests
 {
-    [Fact]
-    public void BuildDisplayText_IncludesMeasurementDetails()
-    {
-        var renderer = new AsciiConsoleRenderer();
-        var measurement = new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero), 80, 20, 120);
-        var text = renderer.BuildDisplayText([1, 2, 3], 40, 10, "frame ok", measurement);
-
-        Assert.Contains("jar", text);
-        Assert.Contains("dough", text);
-    }
-
     [Fact]
     public void Analyze_TracksPositiveRiseAfterBaselineIsSet()
     {

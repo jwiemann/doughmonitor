@@ -2,59 +2,6 @@ using SourdoughMonitor.Config;
 
 namespace SourdoughMonitor.Analysis;
 
-/// <summary>A single accepted, smoothed data point of dough height in pixels.</summary>
-public sealed record GrowthSample(DateTimeOffset Timestamp, double HeightPx);
-
-/// <summary>Result of the growth analysis, including a peak-time prediction when enough data exists.</summary>
-public sealed record GrowthAnalysis(
-    double CurrentHeightPx,
-    double StartHeightPx,
-    double GrowthFactor,
-    double RiseRatePxPerHour,
-    double AccelerationPxPerHour2,
-    RiseTrend Trend,
-    DateTimeOffset? PredictedPeakTime,
-    double? PredictedPeakHeightPx,
-    DateTimeOffset? EstimatedTargetTime,
-    GrowthPhase Phase);
-
-public enum GrowthPhase
-{
-    /// <summary>Not enough data yet.</summary>
-    Collecting,
-
-    /// <summary>Early flat phase, fermentation not yet visibly active.</summary>
-    Lag,
-
-    /// <summary>Active rise, roughly linear segment of the sigmoid.</summary>
-    Rising,
-
-    /// <summary>Rise rate clearly decelerating, approaching the peak.</summary>
-    Slowing,
-
-    /// <summary>Height plateaued or falling — peak reached or passed.</summary>
-    Peaked,
-}
-
-/// <summary>Direction of change of the rise rate over the recent trend window.</summary>
-public enum RiseTrend
-{
-    /// <summary>Not enough data to compare two rate windows.</summary>
-    Unknown,
-
-    /// <summary>Rise rate is increasing — fermentation ramping up.</summary>
-    Accelerating,
-
-    /// <summary>Rise rate roughly constant.</summary>
-    Steady,
-
-    /// <summary>Rise rate is decreasing — approaching the peak.</summary>
-    Decelerating,
-}
-
-/// <summary>Turns raw per-frame level measurements into a smoothed growth curve,
-/// rejects outliers, fits a logistic model and predicts the peak time.
-/// Heights are measured as (jarBottom - doughSurfaceY), i.e. larger = more risen.</summary>
 public sealed class GrowthTracker(GrowthOptions options)
 {
     private readonly List<GrowthSample> _samples = [];
@@ -280,17 +227,12 @@ public sealed class GrowthTracker(GrowthOptions options)
 
     private readonly record struct LogisticFit(double Plateau, double K, double TMid)
     {
-        /// <summary>Hours (relative to the first sample) at which the curve reaches
-        /// the given fraction of the plateau. Null if fraction is not in (0, 1).</summary>
         public double? TimeAtFraction(double fraction)
         {
             if (fraction is <= 0 or >= 1) return null;
-            // Solve L*f = L / (1 + exp(-k (t - t0)))  =>  t = t0 - ln(1/f - 1) / k
             return TMid - Math.Log(1.0 / fraction - 1.0) / K;
         }
 
-        /// <summary>Hours (relative to the first sample) at which the curve reaches an
-        /// absolute height. Null if the height is at or above the plateau.</summary>
         public double? TimeAtHeight(double height)
         {
             if (height <= 0 || height >= Plateau) return null;

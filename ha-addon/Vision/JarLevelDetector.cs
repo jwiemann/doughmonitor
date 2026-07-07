@@ -21,11 +21,9 @@ public DetectionDiagnostics? LastDiagnostics { get; private set; }
 /// <summary>JPEG bytes of the most recently annotated debug image, or null if none yet.</summary>
 public byte[]? LatestAnnotatedImageBytes { get; private set; }
 
-    public sealed record DetectionDiagnostics(
-        string Method,
-        double BandContrast,
-        int? BandTopRow,
-        int? FinalRow);
+    private sealed record WallLine(int X, int Top, int Bottom);
+
+    private sealed record JarColumn(int Left, int Right, int Top, int Bottom);
 
     public LevelMeasurement? Measure(byte[] jpegBytes, DateTimeOffset now)
     {
@@ -125,10 +123,6 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
         }
         return src.Clone();
     }
-
-    private sealed record WallLine(int X, int Top, int Bottom);
-
-    private sealed record JarColumn(int Left, int Right, int Top, int Bottom);
 
     private JarColumn? FindJarColumn(Mat edges, int frameWidth, int frameHeight, double relaxation)
     {

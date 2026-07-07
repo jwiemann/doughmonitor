@@ -71,7 +71,7 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
     }
 
     public async Task PublishDetectionDiagnosticsAsync(
-        JarLevelDetector.DetectionDiagnostics? diagnostics,
+        DetectionDiagnostics? diagnostics,
         LevelMeasurement? measurement,
         CancellationToken ct)
     {

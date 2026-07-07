@@ -157,11 +157,11 @@ public sealed class RiseAnalyzer
 
     private static string ResolvePath(string path) =>
         Path.IsPathFullyQualified(path) ? path : Path.Combine(AppContext.BaseDirectory, path);
-}
 
-internal sealed record AnalyzerState(
-    List<Sample> Samples,
-    List<(DateTimeOffset Time, double Slope)> Slopes,
-    double? BaselineDoughHeightPx,
-    DateTimeOffset SessionStart,
-    bool Peaked);
+    private sealed record AnalyzerState(
+        List<Sample> Samples,
+        List<(DateTimeOffset Time, double Slope)> Slopes,
+        double? BaselineDoughHeightPx,
+        DateTimeOffset SessionStart,
+        bool Peaked);
+}

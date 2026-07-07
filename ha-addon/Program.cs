@@ -40,7 +40,6 @@ builder.Services.AddSingleton<RiseAnalyzer>();
 builder.Services.AddSingleton(new GrowthOptions());
 builder.Services.AddSingleton<GrowthTracker>();
 builder.Services.AddSingleton<HaMqttPublisher>();
-builder.Services.AddSingleton<AsciiConsoleRenderer>();
 builder.Services.AddHostedService<Worker>();
 
 var host = builder.Build();

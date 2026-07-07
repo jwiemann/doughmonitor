@@ -12,7 +12,6 @@ public sealed class Worker(
     RiseAnalyzer analyzer,
     GrowthTracker growthTracker,
     HaMqttPublisher mqtt,
-    AsciiConsoleRenderer consoleRenderer,
     MonitorOptions options,
     ILogger<Worker> logger) : BackgroundService
 {
@@ -24,21 +23,6 @@ public sealed class Worker(
             analyzer.Reset();
             return Task.CompletedTask;
         };
-
-        var renderTask = Task.Run(() =>
-        {
-            consoleRenderer.RenderLoop(() =>
-            {
-                try
-                {
-                    return frigate.GetLatestSnapshotAsync(ct).GetAwaiter().GetResult() ?? Array.Empty<byte>();
-                }
-                catch
-                {
-                    return Array.Empty<byte>();
-                }
-            }, TimeSpan.FromMilliseconds(1000), ct);
-        }, ct);
 
         try
         {
@@ -66,8 +50,6 @@ public sealed class Worker(
             }
         }
         while (await timer.WaitForNextTickAsync(ct));
-
-        await renderTask;
     }
 
     private async Task SampleOnceAsync(CancellationToken ct)
@@ -85,9 +67,6 @@ public sealed class Worker(
             measurement = JarLevelDetector.AdjustMeasurementForRoi(measurement, options.Vision.RoiY.Value);
         }
 
-        consoleRenderer.SetMeasurement(measurement);
-        consoleRenderer.SetDetectionDiagnostics(detector.LastDiagnostics);
-
         // Publish debug image and diagnostics via MQTT when debug mode is enabled
         if (options.Mqtt.DebugMode && detector.LatestAnnotatedImageBytes is not null)
         {
@@ -102,8 +81,7 @@ public sealed class Worker(
         }
 
         growthTracker.Add(measurement);
-        var growthAnalysis = growthTracker.Analyze();
-        consoleRenderer.SetGrowthAnalysis(growthAnalysis);
+        _ = growthTracker.Analyze();
 
         var reading = analyzer.Analyze(measurement);
         await mqtt.PublishReadingAsync(reading, ct);

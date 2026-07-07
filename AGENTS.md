@@ -6,7 +6,7 @@
   1. fetch a snapshot,
   2. detect the jar and dough surface,
   3. track growth over time,
-  4. publish readings and render a live preview.
+  4. publish readings.
 
 ## Working conventions
 - Prefer small, targeted changes over broad rewrites.
@@ -23,7 +23,6 @@
 
 ## Important areas
 - Vision detection logic lives in [Vision/JarLevelDetector.cs](Vision/JarLevelDetector.cs).
-- Rendering and debug overlays live in [Services/AsciiConsoleRenderer.cs](Services/AsciiConsoleRenderer.cs).
 - Growth analysis lives in [Analysis](Analysis).
 - Tests live in [SourdoughMonitor.Tests](SourdoughMonitor.Tests).
 
