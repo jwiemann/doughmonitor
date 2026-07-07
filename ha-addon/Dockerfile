@@ -11,7 +11,7 @@ RUN dotnet publish -c Release -r linux-x64 --self-contained true -o /app
 # OpenCvSharp native library (glibc 2.35, ffmpeg 4.4, tesseract 4, OpenEXR 2.5).
 FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates \
+        ca-certificates jq \
         libtesseract4 libgtk2.0-0 libdc1394-25 \
         libavcodec58 libavformat58 libswscale5 \
         libjpeg-turbo8 libtiff5 libopenjp2-7 libopenexr25 \
@@ -20,6 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY --from=build /app .
+COPY run.sh .
+
+RUN chmod +x /app/run.sh
 
 RUN missing=$(ldd /app/libOpenCvSharpExtern.so | grep "not found" || true); \
     if [ -n "$missing" ]; then \
@@ -28,4 +31,4 @@ RUN missing=$(ldd /app/libOpenCvSharpExtern.so | grep "not found" || true); \
         exit 1; \
     fi
 
-ENTRYPOINT ["/app/SourdoughMonitor"]
+ENTRYPOINT ["/app/run.sh"]
