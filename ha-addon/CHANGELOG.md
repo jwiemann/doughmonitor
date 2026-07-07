@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.14
+
+- Add native library copy command to Dockerfile
+
 ## 0.1.13
 
 - Add OpenCvSharp native libraries path to run script
