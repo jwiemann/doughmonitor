@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.19
+
+- Update run.sh to execute SourdoughMonitor directly
+
 ## 0.1.18
 
 - Update Dockerfile and run.sh for improved script execution
