@@ -1,4 +1,4 @@
-ARG BUILD_FROM
+ARG BUILD_FROM=mcr.microsoft.com/dotnet/aspnet:8.0-alpine
 FROM $BUILD_FROM
 
 # Install .NET 8 runtime
