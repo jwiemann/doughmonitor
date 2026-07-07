@@ -8,6 +8,11 @@ if ! git diff --cached --name-only | grep -Eq "^ha-addon/"; then
   exit 0
 fi
 
+msg_file="$1"
+if [ -z "$msg_file" ] || [ ! -f "$msg_file" ]; then
+  exit 0
+fi
+
 ver=$(grep -oP 'version: "\K[^"]+' "$CONFIG") || exit 1
 
 major="${ver%%.*}"; rest="${ver#*.}"
@@ -17,7 +22,9 @@ newver="${major}.${minor}.${newpatch}"
 
 sed -i "s/version: \"$ver\"/version: \"$newver\"/" "$CONFIG"
 
-entry="\n## $newver\n\n- \n"
+commit_msg="$(head -1 "$msg_file")"
+
+entry="\n## $newver\n\n- $commit_msg\n"
 awk -v e="$entry" 'NR==1{print; printf e; next} 1' "$CHANGELOG" > "${CHANGELOG}.tmp" \
   && mv "${CHANGELOG}.tmp" "$CHANGELOG"
 
