@@ -23,4 +23,4 @@ export Monitor__Vision__DebugSaveAnnotatedImages="false"
 export LD_LIBRARY_PATH="/app/runtimes/linux-x64/native${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 cd /app
-exec dotnet /app/SourdoughMonitor.dll
+exec /app/SourdoughMonitor
