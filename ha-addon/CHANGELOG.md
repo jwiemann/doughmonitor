@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.12
+
+- Update logging configuration to use console and set level to Information
+
 ## 0.1.11
 
 - Add AsciiConsoleRenderer, FrigateSnapshotClient, JarLevelDetector, and Worker classes
