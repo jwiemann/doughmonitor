@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.22
+
+- Refactor SigmoidFitter, update configuration options, and clean up code structure
+
 ## 0.1.21
 
 - Refactor growth analysis and remove console rendering
