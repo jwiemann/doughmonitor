@@ -76,6 +76,46 @@ public class RiseAnalyzerTests
     }
 
     [Fact]
+    public void Analyze_PersistsAndRestoresStateAcrossRestarts()
+    {
+        var stateFile = Path.Combine(Path.GetTempPath(), $"sourdough_state_test_{Guid.NewGuid():N}.json");
+        try
+        {
+            var options = new AnalysisOptions
+            {
+                SlopeWindowMinutes = 40,
+                ResetDropFraction = 0.25,
+                MinSamplesForFit = 3,
+                MaxEtaRelativeStdError = 0.15,
+                PeakConfirmWindows = 3,
+                MaxSessionHours = 36,
+                StateFilePath = stateFile
+            };
+            var analyzer = new RiseAnalyzer(options);
+            // RestoreState() compares the persisted SessionStart against the real
+            // DateTimeOffset.UtcNow, so the fixture's clock must be anchored to now.
+            var start = DateTimeOffset.UtcNow;
+            analyzer.Analyze(new LevelMeasurement(start, 100, 0, 200));
+            RiseReading? last = null;
+            // Enough samples for a rolling-window slope (>= 4) to be computed and persisted.
+            for (var i = 1; i <= 5; i++)
+                last = analyzer.Analyze(
+                    new LevelMeasurement(start.AddMinutes(5 * i), 100 - 5 * i, 0, 200));
+            Assert.NotNull(last);
+            Assert.NotNull(last!.RiseRatePercentPerHour);
+            Assert.True(File.Exists(stateFile));
+            // A fresh instance reading the persisted file must not throw and must recover the session.
+            var restored = new RiseAnalyzer(options);
+            var next = restored.Analyze(new LevelMeasurement(start.AddMinutes(35), 70, 0, 200));
+            Assert.False(next.NewSession);
+        }
+        finally
+        {
+            if (File.Exists(stateFile)) File.Delete(stateFile);
+        }
+    }
+
+    [Fact]
     public void FindDoughSurfaceFromEnergy_PrefersProminentLowerEdge()
     {
         var energy = new[] { 0.8f, 0.8f, 0.8f, 0.1f, 0.1f, 0.1f, 0.1f, 0.95f, 0.95f, 0.95f, 0.95f };

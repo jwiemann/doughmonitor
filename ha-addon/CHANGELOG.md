@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.25
+
+- Fix rise/rate/peak sensors never updating: `RiseAnalyzer.SaveState()` serialized the rolling
+  slope window as `List<(DateTimeOffset, double)>`, but `System.Text.Json` refuses to
+  (de)serialize tuple types and throws, which aborted every `Analyze()` call before the MQTT
+  reading was published (the debug image/diagnostics topics are unaffected since they're
+  published earlier in the cycle, which is why detection looked fine while the main sensors
+  stayed unavailable). Replaced the tuple with a proper `SlopeSample` record.
+
 ## 0.1.24
 
 - Fix dough-surface detection locking onto IR glare/condensation hot spots instead of the
