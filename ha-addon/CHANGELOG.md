@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.24
+
+- Fix dough-surface detection locking onto IR glare/condensation hot spots instead of the
+  real dough surface: use per-row median intensity (robust to a narrow bright/dark outlier
+  patch) instead of a row mean when building the band-detection intensity profile
+
 ## 0.1.23
 
 - Stabilize rise/rate/peak predictions: smooth raw height readings before baseline and fit
