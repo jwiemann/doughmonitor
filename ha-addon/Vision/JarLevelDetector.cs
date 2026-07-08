@@ -12,14 +12,14 @@ namespace SourdoughMonitor.Vision;
 /// thresholds derive from frame intensity, wall length from frame size.</summary>
 public sealed class JarLevelDetector(VisionOptions options)
 {
-/// <summary>Minimum mean-gray-level contrast between the region directly above a dark band
-/// and the band interior for the band to be trusted over the edge-energy method.</summary>
-private const double MinStepContrast = 15.0;
+    /// <summary>Minimum mean-gray-level contrast between the region directly above a dark band
+    /// and the band interior for the band to be trusted over the edge-energy method.</summary>
+    private const double MinStepContrast = 15.0;
 
-public DetectionDiagnostics? LastDiagnostics { get; private set; }
+    public DetectionDiagnostics? LastDiagnostics { get; private set; }
 
-/// <summary>JPEG bytes of the most recently annotated debug image, or null if none yet.</summary>
-public byte[]? LatestAnnotatedImageBytes { get; private set; }
+    /// <summary>JPEG bytes of the most recently annotated debug image, or null if none yet.</summary>
+    public byte[]? LatestAnnotatedImageBytes { get; private set; }
 
     private sealed record WallLine(int X, int Top, int Bottom);
 
@@ -72,7 +72,6 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
             SaveDebugImage(gray, jarColumn, null, now);
             return null;
         }
-
         var jarBottom = FindJarBottom(columnEdges, columnGray, doughTop.Value, rect.Height - 1);
         SaveDebugImage(gray, jarColumn, jarColumn.Top + doughTop.Value, now);
         return new LevelMeasurement(now, jarColumn.Top + doughTop.Value, jarColumn.Top, jarColumn.Top + jarBottom);
@@ -189,10 +188,8 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
                 new Point(color.Width, doughSurfaceY.Value),
                 Scalar.Red,
                 2);
-
         Cv2.ImEncode(".jpg", color, out var bytes);
         LatestAnnotatedImageBytes = bytes;
-
         if (options.DebugSaveAnnotatedImages)
         {
             var directory = Path.Combine(AppContext.BaseDirectory, options.DebugOutputDirectory);
@@ -223,18 +220,15 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
         var stripWidth = Math.Max(1, columnGray.Width / 2);
         using var centralStrip = columnEdges[new Rect(stripX, 0, stripWidth, columnEdges.Height)];
         var rowEnergy = ReduceRows(centralStrip);
-
         var lowerEdge = FindJarBottomFromHorizontalEdge(centralStrip, doughTop, fallbackBottom);
         if (lowerEdge is not null)
             return lowerEdge.Value;
-
         return FindJarBottomFromEnergy(rowEnergy, fallbackBottom, doughTop);
     }
 
     private static int? FindJarBottomFromHorizontalEdge(Mat columnEdges, int doughTop, int fallbackBottom)
     {
         if (columnEdges.Rows < 3 || columnEdges.Cols < 3) return null;
-
         var lines = Cv2.HoughLinesP(
             columnEdges,
             1,
@@ -242,9 +236,7 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
             threshold: 22,
             minLineLength: Math.Max(8, columnEdges.Cols / 4),
             maxLineGap: 8);
-
-        var horizontals = lines
-            .Where(l =>
+        var horizontals = lines.Where(l =>
             {
                 var dx = Math.Abs(l.P1.X - l.P2.X);
                 var dy = Math.Abs(l.P1.Y - l.P2.Y);
@@ -259,27 +251,24 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
             .OrderByDescending(x => x.Length)
             .ThenByDescending(x => x.Y)
             .ToArray();
-
         return horizontals.Length > 0 ? horizontals[0].Y : null;
     }
 
     public static int FindJarBottomFromEnergy(IReadOnlyList<float> rowEnergy, int fallbackBottom, int? doughTop = null)
     {
         if (rowEnergy.Count == 0) return fallbackBottom;
-
         var smoothed = MovingAverage(rowEnergy, 5);
         var searchStart = Math.Max(0, (doughTop ?? 0) + 1);
         searchStart = Math.Max(searchStart, (int)(smoothed.Length * 0.35));
         var searchEnd = Math.Max(searchStart + 1, Math.Min(smoothed.Length - 1, fallbackBottom));
         if (searchEnd <= searchStart) return fallbackBottom;
-
-        var window = smoothed.Skip(searchStart).Take(Math.Max(1, searchEnd - searchStart + 1)).ToArray();
+        var window = smoothed.Skip(searchStart)
+            .Take(Math.Max(1, searchEnd - searchStart + 1))
+            .ToArray();
         if (window.Length == 0) return fallbackBottom;
-
         var baseline = window.Average();
         var maxEnergy = window.Max();
         if (maxEnergy <= baseline) return fallbackBottom;
-
         var bestRow = -1;
         var bestScore = double.NegativeInfinity;
         for (var y = searchStart; y <= searchEnd; y++)
@@ -298,7 +287,6 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
                 bestRow = y;
             }
         }
-
         return bestRow >= 0 ? bestRow : fallbackBottom;
     }
 
@@ -331,10 +319,13 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
     /// reliable than edge energy, which also fires on embossed lettering, glare edges and dried
     /// residue on the glass. When a qualifying band exists, its top wins and is refined to the
     /// nearest edge peak. Otherwise (diffuse lighting, boxes) the edge-energy method is used.</summary>
-    public static int? FindDoughSurfaceCombined(IReadOnlyList<float> rowEnergy, IReadOnlyList<float> rowIntensity)
-        => FindDoughSurfaceCombined(rowEnergy, rowIntensity, out _);
+    public static int? FindDoughSurfaceCombined(IReadOnlyList<float> rowEnergy, IReadOnlyList<float> rowIntensity) =>
+        FindDoughSurfaceCombined(rowEnergy, rowIntensity, out _);
 
-    private static int? FindDoughSurfaceCombined(IReadOnlyList<float> rowEnergy, IReadOnlyList<float> rowIntensity, out DetectionDiagnostics? diagnostics)
+    private static int? FindDoughSurfaceCombined(
+        IReadOnlyList<float> rowEnergy,
+        IReadOnlyList<float> rowIntensity,
+        out DetectionDiagnostics? diagnostics)
     {
         var bandTop = FindDoughBandTop(rowIntensity, out var bandContrast);
         if (bandTop is not null && bandContrast >= MinStepContrast)
@@ -354,11 +345,9 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
                     bestRow = y;
                 }
             }
-
             diagnostics = new DetectionDiagnostics("band", bandContrast, bandTop, bestRow);
             return bestRow;
         }
-
         var edgeRow = FindDoughSurfaceFromEnergy(rowEnergy);
         diagnostics = new DetectionDiagnostics(edgeRow is null ? "none" : "edge", bandContrast, bandTop, edgeRow);
         return edgeRow;
@@ -380,13 +369,11 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
         var searchStart = Math.Max(1, (int)(n * 0.05));
         var searchEnd = Math.Min(n - 1, (int)(n * 0.95));
         if (searchEnd - searchStart < 5) return null;
-
         var prefix = new double[n];
         for (var i = 0; i < n; i++)
         {
             prefix[i] = i == 0 ? smoothed[0] : prefix[i - 1] + smoothed[i];
         }
-
         var total = prefix[n - 1];
         double minValue = double.PositiveInfinity, maxValue = double.NegativeInfinity;
         for (var y = searchStart; y < searchEnd; y++)
@@ -395,7 +382,6 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
             if (smoothed[y] > maxValue) maxValue = smoothed[y];
         }
         if (maxValue - minValue < MinStepContrast) return null;
-
         int? bestRow = null;
         var bestScore = double.NegativeInfinity;
         var bestContrast = 0.0;
@@ -405,11 +391,9 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
             var meanAbove = prefix[y] / y;
             var meanBelow = (total - prefix[y]) / (n - y);
             var stepContrast = meanAbove - meanBelow;
-
             var left = y > 0 ? smoothed[y - 1] : smoothed[y];
             var right = y < n - 1 ? smoothed[y + 1] : smoothed[y];
             var localDrop = left - right;
-
             var window = Math.Max(2, n / 20);
             var beforeStart = Math.Max(0, y - window);
             var beforeEnd = Math.Max(beforeStart, y - 1);
@@ -427,9 +411,7 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
                 bestContrast = stepContrast;
             }
         }
-
         if (bestRow is null || bestContrast < MinStepContrast) return null;
-
         var threshold = bestScore * 0.85;
         var selectedRow = bestRow.Value;
         for (var y = searchStart; y < bestRow.Value; y++)
@@ -440,7 +422,6 @@ public byte[]? LatestAnnotatedImageBytes { get; private set; }
                 break;
             }
         }
-
         contrast = bestContrast;
         return selectedRow;
     }

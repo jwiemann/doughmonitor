@@ -1,9 +1,13 @@
 using System.Text.Json;
+
 using MathNet.Numerics;
 using MathNet.Numerics.Statistics;
+
 using SourdoughMonitor.Config;
 
 namespace SourdoughMonitor.Analysis;
+
+using Models;
 
 /// <summary>Stateful per-session analysis: baseline tracking, auto-reset, rolling slope, sigmoid-based ETA.</summary>
 public sealed class RiseAnalyzer
@@ -11,7 +15,12 @@ public sealed class RiseAnalyzer
     private readonly AnalysisOptions _options;
     private readonly List<Sample> _samples = [];
     private readonly List<(DateTimeOffset Time, double Slope)> _slopes = [];
-    private readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = true };
+
+    private readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        WriteIndented = true
+    };
+
     private double? _baselineDoughHeightPx;
     private DateTimeOffset _sessionStart;
     private bool _peaked;
@@ -36,25 +45,20 @@ public sealed class RiseAnalyzer
             SaveState();
             return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true);
         }
-
         var risePercent = (m.DoughHeightPx - _baselineDoughHeightPx.Value) / _baselineDoughHeightPx.Value * 100.0;
-
         if (IsCollapseReset(risePercent))
         {
             ResetSession(m.Time, m.DoughHeightPx);
             SaveState();
             return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true);
         }
-
         _samples.Add(new Sample(m.Time, risePercent));
-
         var slope = ComputeWindowSlope(m.Time);
         if (slope is not null)
         {
             _slopes.Add((m.Time, slope.Value));
             UpdatePeakState();
         }
-
         SigmoidFit? fit = null;
         if (!_peaked && _samples.Count >= _options.MinSamplesForFit)
         {
@@ -62,18 +66,25 @@ public sealed class RiseAnalyzer
             if (fit is not null && fit.RelativeStdError > _options.MaxEtaRelativeStdError)
                 fit = null;
         }
-
         SaveState();
-
         return new RiseReading(
             m.Time,
-            Math.Round(risePercent, 1),
-            slope is null ? null : Math.Round(slope.Value, 1),
-            fit is null ? null : Math.Round(fit.L, 0),
+            Math.Round(ClampRisePercent(risePercent), 1),
+            slope is null ? null : Math.Round(ClampRiseRate(slope.Value), 1),
+            fit is null ? null : Math.Round(ClampPredictedPeak(fit.L), 0),
             fit is null ? null : _sessionStart.AddHours(fit.PeakHoursFromStart),
             _peaked,
             NewSession: false);
     }
+
+    private static double ClampRisePercent(double value) =>
+        Math.Clamp(value, 0, 500);
+
+    private static double ClampRiseRate(double value) =>
+        Math.Clamp(value, -100, 500);
+
+    private static double ClampPredictedPeak(double value) =>
+        Math.Clamp(value, 0, 500);
 
     private bool SessionExpired(DateTimeOffset now) =>
         _samples.Count > 0 && (now - _sessionStart).TotalHours > _options.MaxSessionHours;
@@ -81,28 +92,31 @@ public sealed class RiseAnalyzer
     private bool IsCollapseReset(double risePercent)
     {
         if (_samples.Count < 5) return false;
-        var recentMedian = _samples.TakeLast(5).Select(s => s.RisePercent).Median();
+        var recentMedian = _samples.TakeLast(5)
+            .Select(s => s.RisePercent)
+            .Median();
         return recentMedian > 20 && risePercent < recentMedian * (1 - _options.ResetDropFraction);
     }
 
     private double? ComputeWindowSlope(DateTimeOffset now)
     {
-        var window = _samples
-            .Where(s => (now - s.Time).TotalMinutes <= _options.SlopeWindowMinutes)
+        var window = _samples.Where(s => (now - s.Time).TotalMinutes <= _options.SlopeWindowMinutes)
             .ToArray();
         if (window.Length < 4) return null;
-
-        var x = window.Select(s => (s.Time - window[0].Time).TotalHours).ToArray();
-        var y = window.Select(s => s.RisePercent).ToArray();
-        return Fit.Line(x, y).B;
+        var x = window.Select(s => (s.Time - window[0].Time).TotalHours)
+            .ToArray();
+        var y = window.Select(s => s.RisePercent)
+            .ToArray();
+        return Fit.Line(x, y)
+            .B;
     }
 
     private void UpdatePeakState()
     {
         if (_peaked || _slopes.Count < _options.PeakConfirmWindows) return;
-
         var maxRise = _samples.Max(s => s.RisePercent);
-        var flatOrFalling = _slopes.TakeLast(_options.PeakConfirmWindows).All(s => s.Slope <= 0.5);
+        var flatOrFalling = _slopes.TakeLast(_options.PeakConfirmWindows)
+            .All(s => s.Slope <= 0.5);
         _peaked = maxRise > 25 && flatOrFalling;
     }
 
@@ -118,8 +132,12 @@ public sealed class RiseAnalyzer
     private void SaveState()
     {
         if (string.IsNullOrWhiteSpace(_options.StateFilePath)) return;
-
-        var state = new AnalyzerState(_samples.ToList(), _slopes.ToList(), _baselineDoughHeightPx, _sessionStart, _peaked);
+        var state = new AnalyzerState(
+            _samples.ToList(),
+            _slopes.ToList(),
+            _baselineDoughHeightPx,
+            _sessionStart,
+            _peaked);
         var path = ResolvePath(_options.StateFilePath);
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
@@ -129,15 +147,12 @@ public sealed class RiseAnalyzer
     private void RestoreState()
     {
         if (string.IsNullOrWhiteSpace(_options.StateFilePath)) return;
-
         var path = ResolvePath(_options.StateFilePath);
         if (!File.Exists(path)) return;
-
         try
         {
             var state = JsonSerializer.Deserialize<AnalyzerState>(File.ReadAllText(path), _jsonOptions);
             if (state is null) return;
-
             _samples.Clear();
             _samples.AddRange(state.Samples);
             _slopes.Clear();
@@ -145,7 +160,6 @@ public sealed class RiseAnalyzer
             _baselineDoughHeightPx = state.BaselineDoughHeightPx;
             _sessionStart = state.SessionStart;
             _peaked = state.Peaked;
-
             if (_samples.Count > 0 && SessionExpired(DateTimeOffset.UtcNow))
                 ResetSession(DateTimeOffset.UtcNow, null);
         }

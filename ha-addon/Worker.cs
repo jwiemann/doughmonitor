@@ -23,10 +23,10 @@ public sealed class Worker(
             analyzer.Reset();
             return Task.CompletedTask;
         };
-
         try
         {
-            await mqtt.ConnectAsync(ct).WaitAsync(TimeSpan.FromSeconds(5));
+            await mqtt.ConnectAsync(ct)
+                .WaitAsync(TimeSpan.FromSeconds(5));
         }
         catch (TimeoutException)
         {
@@ -36,7 +36,6 @@ public sealed class Worker(
         {
             logger.LogWarning(ex, "MQTT connect failed; continuing without MQTT updates");
         }
-
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(options.Frigate.SampleIntervalMinutes));
         do
         {
@@ -60,7 +59,6 @@ public sealed class Worker(
             logger.LogWarning("No snapshot from Frigate");
             return;
         }
-
         var measurement = detector.Measure(jpeg, DateTimeOffset.Now);
         if (measurement is not null && options.Vision.RoiY is not null)
         {
@@ -73,21 +71,20 @@ public sealed class Worker(
             await mqtt.PublishDebugImageAsync(detector.LatestAnnotatedImageBytes, ct);
             await mqtt.PublishDetectionDiagnosticsAsync(detector.LastDiagnostics, measurement, ct);
         }
-
         if (measurement is null)
         {
             await mqtt.PublishUnavailableMeasurementAsync(ct);
             return;
         }
-
         growthTracker.Add(measurement);
         _ = growthTracker.Analyze();
-
         var reading = analyzer.Analyze(measurement);
         await mqtt.PublishReadingAsync(reading, ct);
-
         logger.LogInformation(
             "Rise {Rise}% | Rate {Rate}%/h | ETA {Eta} | Peaked {Peaked}",
-            reading.RisePercent, reading.RiseRatePercentPerHour, reading.PredictedPeakTime, reading.Peaked);
+            reading.RisePercent,
+            reading.RiseRatePercentPerHour,
+            reading.PredictedPeakTime,
+            reading.Peaked);
     }
 }

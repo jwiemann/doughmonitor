@@ -1,6 +1,10 @@
-namespace SourdoughMonitor.Analysis;
+using System;
+using System.Linq;
 
-public sealed record SigmoidFit(double L, double K, double T0, double RelativeStdError)
+namespace SourdoughMonitor.Models
 {
-    public double PeakHoursFromStart => T0 + 2.0 / K;
+    public sealed record SigmoidFit(double L, double K, double T0, double RelativeStdError)
+    {
+        public double PeakHoursFromStart => T0 + 2.0 / K;
+    }
 }

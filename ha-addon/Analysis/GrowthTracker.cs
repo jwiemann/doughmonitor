@@ -61,7 +61,6 @@ public sealed class GrowthTracker(GrowthOptions options)
                 null,
                 GrowthPhase.Collecting);
         }
-
         var fit = _samples.Count >= options.MinSamplesForFit ? FitLogistic() : null;
         var phase = ClassifyPhase(riseRate, fit, current);
         DateTimeOffset? peakTime = null;
@@ -96,7 +95,10 @@ public sealed class GrowthTracker(GrowthOptions options)
     /// Prefers the logistic fit when available; falls back to linear extrapolation of the
     /// current rise rate, which is honest much earlier than the sigmoid converges.</summary>
     private DateTimeOffset? EstimateTargetTime(
-        GrowthSample start, GrowthSample current, double riseRate, LogisticFit? fit)
+        GrowthSample start,
+        GrowthSample current,
+        double riseRate,
+        LogisticFit? fit)
     {
         var targetHeight = start.HeightPx * options.TargetGrowthFactor;
         if (current.HeightPx >= targetHeight) return current.Timestamp; // already there
@@ -117,7 +119,8 @@ public sealed class GrowthTracker(GrowthOptions options)
     {
         var end = _samples[^1].Timestamp - endOffset;
         var startCutoff = end - window;
-        var slice = _samples.Where(s => s.Timestamp >= startCutoff && s.Timestamp <= end).ToArray();
+        var slice = _samples.Where(s => s.Timestamp >= startCutoff && s.Timestamp <= end)
+            .ToArray();
         if (slice.Length < 2) return 0;
         return LinearSlope(slice, slice[0].Timestamp);
     }
@@ -133,9 +136,8 @@ public sealed class GrowthTracker(GrowthOptions options)
         var acceleration = (currentRate - previousRate) / windowHours;
         // Dead band: ignore changes smaller than 15% of the current rate or the noise floor.
         var deadBand = Math.Max(options.FlatRatePxPerHour, Math.Abs(currentRate) * 0.15) / windowHours;
-        var trend = acceleration > deadBand ? RiseTrend.Accelerating
-            : acceleration < -deadBand ? RiseTrend.Decelerating
-            : RiseTrend.Steady;
+        var trend = acceleration > deadBand ? RiseTrend.Accelerating :
+            acceleration < -deadBand ? RiseTrend.Decelerating : RiseTrend.Steady;
         return (acceleration, trend);
     }
 
@@ -160,8 +162,10 @@ public sealed class GrowthTracker(GrowthOptions options)
     private LogisticFit? FitLogistic()
     {
         var t0Ref = _samples[0].Timestamp;
-        var times = _samples.Select(s => (s.Timestamp - t0Ref).TotalHours).ToArray();
-        var heights = _samples.Select(s => s.HeightPx).ToArray();
+        var times = _samples.Select(s => (s.Timestamp - t0Ref).TotalHours)
+            .ToArray();
+        var heights = _samples.Select(s => s.HeightPx)
+            .ToArray();
         var hMax = heights.Max();
         var hMin = heights.Min();
         if (hMax - hMin < options.JitterTolerancePx * 2)
@@ -204,7 +208,8 @@ public sealed class GrowthTracker(GrowthOptions options)
 
     private static double Median(IEnumerable<double> values)
     {
-        var sorted = values.Order().ToArray();
+        var sorted = values.Order()
+            .ToArray();
         var mid = sorted.Length / 2;
         return sorted.Length % 2 == 0 ? (sorted[mid - 1] + sorted[mid]) / 2.0 : sorted[mid];
     }
