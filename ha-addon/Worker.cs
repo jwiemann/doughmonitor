@@ -16,11 +16,11 @@ public sealed class Worker(
 {
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        mqtt.ResetRequested += () =>
+        mqtt.ResetRequested += async () =>
         {
             logger.LogInformation("Manual session reset via MQTT");
-            analyzer.Reset();
-            return Task.CompletedTask;
+            var reading = analyzer.Reset();
+            await mqtt.PublishReadingAsync(reading, ct);
         };
         try
         {

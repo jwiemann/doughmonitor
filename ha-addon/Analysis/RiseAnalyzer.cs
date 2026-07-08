@@ -33,10 +33,11 @@ public sealed class RiseAnalyzer
         RestoreState();
     }
 
-    public void Reset()
+    public RiseReading Reset()
     {
         ResetSession(DateTimeOffset.MinValue, null);
         SaveState();
+        return new RiseReading(DateTimeOffset.UtcNow, 0, null, null, null, false, NewSession: true);
     }
 
     public RiseReading Analyze(LevelMeasurement m)
