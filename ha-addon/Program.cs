@@ -35,8 +35,6 @@ builder.Services.AddSingleton(options.Vision);
 builder.Services.AddHttpClient<FrigateSnapshotClient>();
 builder.Services.AddSingleton<JarLevelDetector>();
 builder.Services.AddSingleton<RiseAnalyzer>();
-builder.Services.AddSingleton(new GrowthOptions());
-builder.Services.AddSingleton<GrowthTracker>();
 builder.Services.AddSingleton<HaMqttPublisher>();
 builder.Services.AddHostedService<Worker>();
 var host = builder.Build();

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.23
+
+- Stabilize rise/rate/peak predictions: smooth raw height readings before baseline and fit
+  calculations, warm-start the sigmoid fit from the previous cycle's solution, derive the
+  practical peak from the fitted plateau instead of a fixed threshold, and replace scattered
+  magic numbers with named, documented AnalysisOptions
+
 ## 0.1.22
 
 - Refactor SigmoidFitter, update configuration options, and clean up code structure

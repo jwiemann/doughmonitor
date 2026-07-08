@@ -10,7 +10,6 @@ public sealed class Worker(
     FrigateSnapshotClient frigate,
     JarLevelDetector detector,
     RiseAnalyzer analyzer,
-    GrowthTracker growthTracker,
     HaMqttPublisher mqtt,
     MonitorOptions options,
     ILogger<Worker> logger) : BackgroundService
@@ -76,8 +75,6 @@ public sealed class Worker(
             await mqtt.PublishUnavailableMeasurementAsync(ct);
             return;
         }
-        growthTracker.Add(measurement);
-        _ = growthTracker.Analyze();
         var reading = analyzer.Analyze(measurement);
         await mqtt.PublishReadingAsync(reading, ct);
         logger.LogInformation(
