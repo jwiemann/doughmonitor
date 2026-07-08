@@ -15,6 +15,7 @@ public sealed class RiseAnalyzer
     private readonly AnalysisOptions _options;
     private readonly List<Sample> _samples = [];
     private readonly List<(DateTimeOffset Time, double Slope)> _slopes = [];
+    private readonly Queue<double> _heightWindow = new();
 
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -24,6 +25,7 @@ public sealed class RiseAnalyzer
     private double? _baselineDoughHeightPx;
     private DateTimeOffset _sessionStart;
     private bool _peaked;
+    private SigmoidFit? _lastFit;
 
     public RiseAnalyzer(AnalysisOptions options)
     {
@@ -39,42 +41,53 @@ public sealed class RiseAnalyzer
 
     public RiseReading Analyze(LevelMeasurement m)
     {
+        // Smooth the raw per-frame pixel height first: a single noisy/condensation-affected
+        // frame would otherwise propagate straight into the baseline and every downstream
+        // percentage, slope and fit computed from it.
+        var smoothedHeightPx = Smooth(m.DoughHeightPx);
         if (_baselineDoughHeightPx is null || SessionExpired(m.Time))
         {
-            ResetSession(m.Time, m.DoughHeightPx);
+            ResetSession(m.Time, smoothedHeightPx);
             SaveState();
             return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true);
         }
-        var risePercent = (m.DoughHeightPx - _baselineDoughHeightPx.Value) / _baselineDoughHeightPx.Value * 100.0;
+        var risePercent = (smoothedHeightPx - _baselineDoughHeightPx.Value) / _baselineDoughHeightPx.Value * 100.0;
         if (IsCollapseReset(risePercent))
         {
-            ResetSession(m.Time, m.DoughHeightPx);
+            ResetSession(m.Time, smoothedHeightPx);
             SaveState();
             return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true);
         }
         _samples.Add(new Sample(m.Time, risePercent));
         var slope = ComputeWindowSlope(m.Time);
         if (slope is not null)
-        {
             _slopes.Add((m.Time, slope.Value));
-            UpdatePeakState();
-        }
         SigmoidFit? fit = null;
         if (!_peaked && _samples.Count >= _options.MinSamplesForFit)
         {
-            fit = SigmoidFitter.TryFit(_samples);
+            fit = SigmoidFitter.TryFit(_samples, _lastFit);
             if (fit is not null && fit.RelativeStdError > _options.MaxEtaRelativeStdError)
                 fit = null;
         }
+        if (fit is not null) _lastFit = fit;
+        if (slope is not null) UpdatePeakState(fit);
         SaveState();
         return new RiseReading(
             m.Time,
             Math.Round(ClampRisePercent(risePercent), 1),
             slope is null ? null : Math.Round(ClampRiseRate(slope.Value), 1),
-            fit is null ? null : Math.Round(ClampPredictedPeak(fit.L), 0),
-            fit is null ? null : _sessionStart.AddHours(fit.PeakHoursFromStart),
+            fit is null ? null : Math.Round(ClampPredictedPeak(fit.L * _options.PeakFraction), 0),
+            fit is null ? null : _sessionStart.AddHours(fit.HoursAtFraction(_options.PeakFraction)),
             _peaked,
             NewSession: false);
+    }
+
+    private double Smooth(double rawHeightPx)
+    {
+        _heightWindow.Enqueue(rawHeightPx);
+        while (_heightWindow.Count > _options.MedianWindowSize)
+            _heightWindow.Dequeue();
+        return _heightWindow.Median();
     }
 
     private static double ClampRisePercent(double value) =>
@@ -111,22 +124,29 @@ public sealed class RiseAnalyzer
             .B;
     }
 
-    private void UpdatePeakState()
+    private void UpdatePeakState(SigmoidFit? fit)
     {
         if (_peaked || _slopes.Count < _options.PeakConfirmWindows) return;
-        var maxRise = _samples.Max(s => s.RisePercent);
         var flatOrFalling = _slopes.TakeLast(_options.PeakConfirmWindows)
-            .All(s => s.Slope <= 0.5);
-        _peaked = maxRise > 25 && flatOrFalling;
+            .All(s => s.Slope <= _options.FlatSlopePercentPerHour);
+        if (!flatOrFalling) return;
+        var maxRise = _samples.Max(s => s.RisePercent);
+        // Prefer the fitted plateau (adapts to how far this particular starter actually
+        // rises); fall back to a flat minimum-rise gate only while no fit is available yet,
+        // so lag-phase noise is never mistaken for a peak.
+        var reachedFittedPlateau = fit is not null && maxRise >= fit.L * _options.PeakFraction;
+        _peaked = reachedFittedPlateau || maxRise >= _options.MinRisePercentForPeak;
     }
 
     private void ResetSession(DateTimeOffset start, double? baselinePx)
     {
         _samples.Clear();
         _slopes.Clear();
+        _heightWindow.Clear();
         _baselineDoughHeightPx = baselinePx;
         _sessionStart = start;
         _peaked = false;
+        _lastFit = null;
     }
 
     private void SaveState()
