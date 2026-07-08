@@ -208,7 +208,13 @@ public sealed class JarLevelDetector(VisionOptions options)
         var stripX = columnGray.Width / 4;
         var stripWidth = Math.Max(1, columnGray.Width / 2);
         using var centralStrip = columnGray[new Rect(stripX, 0, stripWidth, columnGray.Height)];
-        var rowIntensity = ReduceRows(centralStrip, average: true);
+        // Row median rather than row mean: IR illumination commonly puts a narrow, very
+        // bright specular hot spot or condensation glare through the center of the jar. A
+        // mean pulls the whole row toward that hot spot even though it covers only a
+        // fraction of the row's width, dragging the detected band boundary up into the
+        // glare instead of down to the real dough surface. The median ignores it as long as
+        // it covers less than half the strip width, which it reliably does.
+        var rowIntensity = ReduceRowsMedian(centralStrip);
         var result = FindDoughSurfaceCombined(rowEnergy, rowIntensity, out var diagnostics);
         LastDiagnostics = diagnostics ?? new DetectionDiagnostics("none", 0, null, null);
         return result;
@@ -290,7 +296,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         return bestRow >= 0 ? bestRow : fallbackBottom;
     }
 
-    private static float[] ReduceRows(Mat column, bool average = false)
+    private static float[] ReduceRows(Mat column)
     {
         var values = new float[column.Rows];
         using var reduced = new Mat();
@@ -298,10 +304,30 @@ public sealed class JarLevelDetector(VisionOptions options)
             column,
             reduced,
             ReduceDimension.Column,
-            average ? ReduceTypes.Avg : ReduceTypes.Sum,
+            ReduceTypes.Sum,
             MatType.CV_32F);
         reduced.GetArray(out values);
         return values;
+    }
+
+    /// <summary>Per-row median intensity of an 8-bit grayscale Mat. Unlike a mean, a single
+    /// bright or dark outlier patch within a row (glare, a condensation droplet) cannot shift
+    /// the result as long as it covers less than half the row's width.</summary>
+    private static float[] ReduceRowsMedian(Mat column)
+    {
+        var rows = column.Rows;
+        var cols = column.Cols;
+        var result = new float[rows];
+        var buffer = new byte[cols];
+        var mid = cols / 2;
+        for (var y = 0; y < rows; y++)
+        {
+            for (var x = 0; x < cols; x++)
+                buffer[x] = column.Get<byte>(y, x);
+            Array.Sort(buffer);
+            result[y] = cols % 2 == 0 ? (buffer[mid - 1] + buffer[mid]) / 2f : buffer[mid];
+        }
+        return result;
     }
 
     public static LevelMeasurement AdjustMeasurementForRoi(LevelMeasurement measurement, int roiY)
