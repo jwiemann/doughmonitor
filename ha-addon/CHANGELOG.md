@@ -1,13 +1,19 @@
 # Changelog
 
+## 0.1.26
+
+- Round `band_contrast` to a whole number before publishing; it's a diagnostic viewed at a
+  glance in HA and never needed sub-pixel-intensity precision.
+
 ## 0.1.25
 
-- Fix rise/rate/peak sensors never updating: `RiseAnalyzer.SaveState()` serialized the rolling
-  slope window as `List<(DateTimeOffset, double)>`, but `System.Text.Json` refuses to
-  (de)serialize tuple types and throws, which aborted every `Analyze()` call before the MQTT
-  reading was published (the debug image/diagnostics topics are unaffected since they're
-  published earlier in the cycle, which is why detection looked fine while the main sensors
-  stayed unavailable). Replaced the tuple with a proper `SlopeSample` record.
+- Fix the persisted rolling-slope window silently zeroing out on every restart:
+  `RiseAnalyzer.SaveState()`/`RestoreState()` stored it as `List<(DateTimeOffset, double)>`,
+  but `System.Text.Json` only serializes public properties, not the fields a `ValueTuple`
+  exposes, so every entry round-tripped as `{}` and came back as `Time = default, Slope = 0`.
+  The peak-detection check reads a flat/falling slope window as "practically peaked", so a
+  restart could make the "Starter Peaked" sensor fire early even mid-rise. Replaced the tuple
+  with a proper `SlopeSample` record.
 
 ## 0.1.24
 
