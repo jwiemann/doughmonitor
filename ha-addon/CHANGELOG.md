@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.26
+
+- Round `band_contrast` to a whole number before publishing; it's a diagnostic viewed at a
+  glance in HA and never needed sub-pixel-intensity precision.
+
+## 0.1.25
+
+- Fix the persisted rolling-slope window silently zeroing out on every restart:
+  `RiseAnalyzer.SaveState()`/`RestoreState()` stored it as `List<(DateTimeOffset, double)>`,
+  but `System.Text.Json` only serializes public properties, not the fields a `ValueTuple`
+  exposes, so every entry round-tripped as `{}` and came back as `Time = default, Slope = 0`.
+  The peak-detection check reads a flat/falling slope window as "practically peaked", so a
+  restart could make the "Starter Peaked" sensor fire early even mid-rise. Replaced the tuple
+  with a proper `SlopeSample` record.
+
 ## 0.1.24
 
 - Fix dough-surface detection locking onto IR glare/condensation hot spots instead of the

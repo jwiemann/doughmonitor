@@ -83,7 +83,7 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             new
             {
                 method = diagnostics?.Method ?? "none",
-                band_contrast = diagnostics?.BandContrast ?? 0,
+                band_contrast = (int)Math.Round(diagnostics?.BandContrast ?? 0),
                 band_top_row = diagnostics?.BandTopRow,
                 final_row = diagnostics?.FinalRow,
                 dough_top_px = measurement?.DoughTopPx,

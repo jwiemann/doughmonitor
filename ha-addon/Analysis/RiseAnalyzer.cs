@@ -14,7 +14,7 @@ public sealed class RiseAnalyzer
 {
     private readonly AnalysisOptions _options;
     private readonly List<Sample> _samples = [];
-    private readonly List<(DateTimeOffset Time, double Slope)> _slopes = [];
+    private readonly List<SlopeSample> _slopes = [];
     private readonly Queue<double> _heightWindow = new();
 
     private readonly JsonSerializerOptions _jsonOptions = new()
@@ -62,7 +62,7 @@ public sealed class RiseAnalyzer
         _samples.Add(new Sample(m.Time, risePercent));
         var slope = ComputeWindowSlope(m.Time);
         if (slope is not null)
-            _slopes.Add((m.Time, slope.Value));
+            _slopes.Add(new SlopeSample(m.Time, slope.Value));
         SigmoidFit? fit = null;
         if (!_peaked && _samples.Count >= _options.MinSamplesForFit)
         {
@@ -195,7 +195,7 @@ public sealed class RiseAnalyzer
 
     private sealed record AnalyzerState(
         List<Sample> Samples,
-        List<(DateTimeOffset Time, double Slope)> Slopes,
+        List<SlopeSample> Slopes,
         double? BaselineDoughHeightPx,
         DateTimeOffset SessionStart,
         bool Peaked);
