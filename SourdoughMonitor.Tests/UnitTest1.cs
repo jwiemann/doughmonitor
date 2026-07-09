@@ -133,5 +133,32 @@ public class RiseAnalyzerTests
         Assert.True(surface >= 7);
     }
 
-    
+    [Fact]
+    public void FindDoughBandTop_RejectsJarBaseShadowUnderAmbientLight()
+    {
+        // Mirrors a real ambient-lit (non-backlit) jar: bright glass for the first 50 rows,
+        // then a step down to a jar-base/table-contact shadow for the last 10 rows. A ~50
+        // contrast step like this was observed misidentifying the jar's own base as the dough
+        // surface (94% down the jar) when it should have been rejected in favor of the
+        // edge-energy fallback.
+        var rowIntensity = Enumerable.Repeat(200f, 50)
+            .Concat(Enumerable.Repeat(150f, 10))
+            .ToArray();
+        var bandTop = JarLevelDetector.FindDoughBandTop(rowIntensity, out var contrast);
+        Assert.True(contrast < 55);
+        Assert.Null(bandTop);
+    }
+
+    [Fact]
+    public void FindDoughBandTop_StillDetectsGenuineBacklitStep()
+    {
+        // A true backlit dough band produces a much larger step than a bare ambient-light
+        // shadow; this must keep working after raising the acceptance threshold.
+        var rowIntensity = Enumerable.Repeat(220f, 50)
+            .Concat(Enumerable.Repeat(40f, 10))
+            .ToArray();
+        var bandTop = JarLevelDetector.FindDoughBandTop(rowIntensity, out var contrast);
+        Assert.True(contrast >= 55);
+        Assert.NotNull(bandTop);
+    }
 }

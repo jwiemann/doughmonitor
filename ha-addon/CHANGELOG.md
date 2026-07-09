@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.27
+
+- Raise the band-detection acceptance threshold (`MinStepContrast` 15 -> 55): without
+  backlighting, the strongest bright/dark step in the jar column is often the jar's own base
+  (glass foot, table-contact shadow) rather than the dough surface, and it can still clear a
+  low threshold — observed on a real ambient-lit jar reporting the dough top 94% of the way
+  down the jar (essentially the jar's base) with a contrast of 50. Frames like that now fall
+  back to the edge-energy method instead of confidently reporting the jar's base as the dough
+  surface.
+
 ## 0.1.26
 
 - Round `band_contrast` to a whole number before publishing; it's a diagnostic viewed at a
