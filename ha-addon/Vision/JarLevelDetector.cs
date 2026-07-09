@@ -13,8 +13,14 @@ namespace SourdoughMonitor.Vision;
 public sealed class JarLevelDetector(VisionOptions options)
 {
     /// <summary>Minimum mean-gray-level contrast between the region directly above a dark band
-    /// and the band interior for the band to be trusted over the edge-energy method.</summary>
-    private const double MinStepContrast = 15.0;
+    /// and the band interior for the band to be trusted over the edge-energy method. Without
+    /// backlighting, the strongest bright/dark step in the column is often the jar's own base
+    /// (glass foot, table-contact shadow) rather than the actual dough surface, and it can still
+    /// score noticeably above a low threshold (observed: 50 on a real ambient-lit jar, versus the
+    /// "massive" step a true backlit dough band produces). Raised well above that observed false
+    /// positive so such frames fall back to the edge-energy method instead of confidently
+    /// reporting the jar's base as the dough surface.</summary>
+    private const double MinStepContrast = 55.0;
 
     public DetectionDiagnostics? LastDiagnostics { get; private set; }
 
