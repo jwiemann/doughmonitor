@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.32
+
+- Add a "session start" reference line and label to the debug image: drawn at the dough
+  height recorded when the current session began, re-derived each frame from that frame's
+  detected jar bottom (which doesn't move between frames) so it stays correctly placed as
+  the dough rises.
+- Publish the session start time as `session_start` on the MQTT state topic and as a new
+  "Session Started" HA sensor (`device_class: timestamp`), alongside the existing rise/rate/
+  peak-ETA sensors.
+
 ## 0.1.31
 
 - Fix the new plausibility gate (0.1.30) locking out real dough handling for a long time:

@@ -31,7 +31,11 @@ public sealed class JarLevelDetector(VisionOptions options)
 
     private sealed record JarColumn(int Left, int Right, int Top, int Bottom);
 
-    public LevelMeasurement? Measure(byte[] jpegBytes, DateTimeOffset now)
+    /// <summary>Measures the dough level. <paramref name="sessionBaselineHeightPx"/>, when
+    /// supplied, is the dough height (JarBottomPx - DoughTopPx) recorded at the start of the
+    /// current tracked session; it is drawn on the debug image as a reference line so the
+    /// starting point stays visible even as the dough rises.</summary>
+    public LevelMeasurement? Measure(byte[] jpegBytes, DateTimeOffset now, double? sessionBaselineHeightPx = null)
     {
         using var raw = Cv2.ImDecode(jpegBytes, ImreadModes.Grayscale);
         if (raw.Empty()) return null;
@@ -44,7 +48,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             using var edges = AutoCanny(blurred, relaxation);
             var jarColumn = FindJarColumn(edges, img.Width, img.Height, relaxation);
             if (jarColumn is null) continue;
-            var measurement = MeasureWithinColumn(edges, img, jarColumn, now);
+            var measurement = MeasureWithinColumn(edges, img, jarColumn, now, sessionBaselineHeightPx);
             if (measurement is not null) return measurement;
         }
         // Pass 2: walls invisible (transparent container / box filling the frame)
@@ -53,15 +57,20 @@ public sealed class JarLevelDetector(VisionOptions options)
         {
             using var edges = AutoCanny(blurred, relaxation);
             var fallbackColumn = BuildFallbackColumn(img);
-            var measurement = MeasureWithinColumn(edges, img, fallbackColumn, now);
+            var measurement = MeasureWithinColumn(edges, img, fallbackColumn, now, sessionBaselineHeightPx);
             if (measurement is not null) return measurement;
         }
         if (options.DebugSaveAnnotatedImages)
-            SaveDebugImage(img, null, null, now);
+            SaveDebugImage(img, null, null, null, now);
         return null;
     }
 
-    private LevelMeasurement? MeasureWithinColumn(Mat edges, Mat gray, JarColumn jarColumn, DateTimeOffset now)
+    private LevelMeasurement? MeasureWithinColumn(
+        Mat edges,
+        Mat gray,
+        JarColumn jarColumn,
+        DateTimeOffset now,
+        double? sessionBaselineHeightPx)
     {
         var inset = Math.Max(3, (jarColumn.Right - jarColumn.Left) / 10);
         var rect = new Rect(
@@ -75,11 +84,16 @@ public sealed class JarLevelDetector(VisionOptions options)
         var doughTop = FindDoughSurface(columnEdges, columnGray);
         if (doughTop is null)
         {
-            SaveDebugImage(gray, jarColumn, null, now);
+            SaveDebugImage(gray, jarColumn, null, null, now);
             return null;
         }
         var jarBottom = FindJarBottom(columnEdges, columnGray, doughTop.Value, rect.Height - 1);
-        SaveDebugImage(gray, jarColumn, jarColumn.Top + doughTop.Value, now);
+        // The jar's physical bottom doesn't move between frames, so the session-start dough
+        // surface can be re-derived in this frame's coordinates from this frame's jar bottom.
+        var sessionStartSurfaceY = sessionBaselineHeightPx is not null
+            ? (int?)Math.Round(jarColumn.Top + jarBottom - sessionBaselineHeightPx.Value)
+            : null;
+        SaveDebugImage(gray, jarColumn, jarColumn.Top + doughTop.Value, sessionStartSurfaceY, now);
         return new LevelMeasurement(now, jarColumn.Top + doughTop.Value, jarColumn.Top, jarColumn.Top + jarBottom);
     }
 
@@ -168,7 +182,14 @@ public sealed class JarLevelDetector(VisionOptions options)
         return new JarColumn(wl.X, wr.X, Math.Max(wl.Top, wr.Top), Math.Min(wl.Bottom, wr.Bottom));
     }
 
-    private void SaveDebugImage(Mat image, JarColumn? jarColumn, int? doughSurfaceY, DateTimeOffset now)
+    private static readonly Scalar SessionStartLineColor = new(0, 255, 255); // yellow (BGR)
+
+    private void SaveDebugImage(
+        Mat image,
+        JarColumn? jarColumn,
+        int? doughSurfaceY,
+        int? sessionStartSurfaceY,
+        DateTimeOffset now)
     {
         using var color = new Mat();
         Cv2.CvtColor(image, color, ColorConversionCodes.GRAY2BGR);
@@ -194,6 +215,19 @@ public sealed class JarLevelDetector(VisionOptions options)
                 new Point(color.Width, doughSurfaceY.Value),
                 Scalar.Red,
                 2);
+        if (sessionStartSurfaceY is not null)
+        {
+            var y = Math.Clamp(sessionStartSurfaceY.Value, 0, color.Height - 1);
+            Cv2.Line(color, new Point(0, y), new Point(color.Width, y), SessionStartLineColor, 1, LineTypes.Link8);
+            Cv2.PutText(
+                color,
+                "session start",
+                new Point(4, Math.Clamp(y - 6, 10, color.Height - 4)),
+                HersheyFonts.HersheySimplex,
+                0.4,
+                SessionStartLineColor,
+                1);
+        }
         Cv2.ImEncode(".jpg", color, out var bytes);
         LatestAnnotatedImageBytes = bytes;
         if (options.DebugSaveAnnotatedImages)

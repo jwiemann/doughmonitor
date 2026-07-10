@@ -34,6 +34,36 @@ public class RiseAnalyzerTests
     }
 
     [Fact]
+    public void Analyze_ExposesBaselineHeightAndSessionStartForDebugOverlayAndMqtt()
+    {
+        var analyzer = new RiseAnalyzer(
+            new AnalysisOptions
+            {
+                SlopeWindowMinutes = 40,
+                ResetDropFraction = 0.25,
+                MinSamplesForFit = 3,
+                MaxEtaRelativeStdError = 0.15,
+                PeakConfirmWindows = 3,
+                MaxSessionHours = 36,
+                StateFilePath = null
+            });
+        var start = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        Assert.Null(analyzer.BaselineDoughHeightPx);
+        var initial = analyzer.Analyze(new LevelMeasurement(start, 100, 0, 200));
+        Assert.NotNull(initial);
+        // DoughHeightPx = 200 - 100 = 100 becomes both the baseline used for rise% and the
+        // session's recorded start time.
+        Assert.Equal(100d, analyzer.BaselineDoughHeightPx);
+        Assert.Equal(start, initial!.SessionStart);
+        var next = analyzer.Analyze(new LevelMeasurement(start.AddMinutes(5), 80, 0, 200));
+        Assert.NotNull(next);
+        // A later sample within the same session keeps reporting the original start time,
+        // not the current sample's time.
+        Assert.Equal(start, next!.SessionStart);
+        Assert.Equal(100d, analyzer.BaselineDoughHeightPx);
+    }
+
+    [Fact]
     public void Analyze_ClampsNegativeRisePercentToZero()
     {
         var analyzer = new RiseAnalyzer(

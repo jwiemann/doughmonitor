@@ -7,4 +7,5 @@ public sealed record RiseReading(
     double? PredictedPeakPercent,
     DateTimeOffset? PredictedPeakTime,
     bool Peaked,
-    bool NewSession);
+    bool NewSession,
+    DateTimeOffset? SessionStart = null);

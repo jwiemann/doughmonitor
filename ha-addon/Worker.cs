@@ -91,6 +91,9 @@ public sealed class Worker(
     /// doesn't drop a whole sampling interval's worth of data.</summary>
     private async Task<(byte[]? Jpeg, LevelMeasurement? Measurement)> CaptureWithRetriesAsync(CancellationToken ct)
     {
+        // Read once per cycle: it reflects the session as it stood before this cycle's
+        // measurement, which is exactly the "session start" the debug image should mark.
+        var sessionBaselineHeightPx = analyzer.BaselineDoughHeightPx;
         byte[]? jpeg = null;
         LevelMeasurement? measurement = null;
         for (var attempt = 0; attempt <= options.Frigate.SnapshotRetryCount; attempt++)
@@ -98,7 +101,7 @@ public sealed class Worker(
             jpeg = await frigate.GetLatestSnapshotAsync(ct);
             if (jpeg is not null)
             {
-                measurement = detector.Measure(jpeg, DateTimeOffset.Now);
+                measurement = detector.Measure(jpeg, DateTimeOffset.Now, sessionBaselineHeightPx);
                 if (measurement is not null && options.Vision.RoiY is not null)
                 {
                     measurement = JarLevelDetector.AdjustMeasurementForRoi(measurement, options.Vision.RoiY.Value);

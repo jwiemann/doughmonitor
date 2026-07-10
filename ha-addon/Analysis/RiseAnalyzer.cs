@@ -36,6 +36,11 @@ public sealed class RiseAnalyzer
         RestoreState();
     }
 
+    /// <summary>The dough height (px) the current session's rise percentage is measured
+    /// against, or null when there is no active session. Used to draw a "session start"
+    /// reference line on the debug image.</summary>
+    public double? BaselineDoughHeightPx => _baselineDoughHeightPx;
+
     public RiseReading Reset()
     {
         ResetSession(DateTimeOffset.MinValue, null);
@@ -77,14 +82,14 @@ public sealed class RiseAnalyzer
         {
             ResetSession(m.Time, smoothedHeightPx);
             SaveState();
-            return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true);
+            return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true, SessionStart: _sessionStart);
         }
         var risePercent = (smoothedHeightPx - _baselineDoughHeightPx.Value) / _baselineDoughHeightPx.Value * 100.0;
         if (IsCollapseReset(risePercent))
         {
             ResetSession(m.Time, smoothedHeightPx);
             SaveState();
-            return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true);
+            return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true, SessionStart: _sessionStart);
         }
         _samples.Add(new Sample(m.Time, risePercent));
         var slope = ComputeWindowSlope(m.Time);
@@ -107,7 +112,8 @@ public sealed class RiseAnalyzer
             fit is null ? null : Math.Round(ClampPredictedPeak(fit.L * _options.PeakFraction), 0),
             fit is null ? null : _sessionStart.AddHours(fit.HoursAtFraction(_options.PeakFraction)),
             _peaked,
-            NewSession: false);
+            NewSession: false,
+            SessionStart: _sessionStart);
     }
 
     private double Smooth(double rawHeightPx)

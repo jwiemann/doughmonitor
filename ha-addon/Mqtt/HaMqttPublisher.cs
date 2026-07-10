@@ -58,7 +58,8 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                 peak_eta = reading.PredictedPeakTime?.ToString("O"),
                 peaked = reading.Peaked ? "ON" : "OFF",
                 new_session = reading.NewSession,
-                last_update = reading.Time.ToString("O")
+                last_update = reading.Time.ToString("O"),
+                session_start = reading.SessionStart?.ToString("O")
             },
             JsonOpts);
         await PublishAsync(StateTopic, payload, retain: true, ct);
@@ -134,6 +135,15 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             "Peak ETA",
             null,
             "{{ value_json.peak_eta }}",
+            device,
+            ct,
+            deviceClass: "timestamp",
+            stateTopicOverride: StateTopic);
+        await PublishSensorConfigAsync(
+            "session_start",
+            "Session Started",
+            null,
+            "{{ value_json.session_start }}",
             device,
             ct,
             deviceClass: "timestamp",
