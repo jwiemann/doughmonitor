@@ -1,6 +1,6 @@
 name: Sourdough Monitor
 url: https://github.com/jwiemann/doughmonitor
-version: "0.1.27"
+version: "0.1.28"
 slug: sourdough_monitor
 description: Monitor sourdough rise from Frigate camera snapshots with MQTT discovery
 arch:
@@ -14,11 +14,11 @@ services:
   - mqtt:need
 options:
   frigate_camera: "battery_cam"
-  frigate_sample_interval_minutes: 10
+  frigate_sample_interval_minutes: 5
   mqtt_device_id: "sourdough_monitor"
   debug_enabled: false
 schema:
   frigate_camera: str
-  frigate_sample_interval_minutes: int(1,60)
+  frigate_sample_interval_minutes: float(0.25,60)
   mqtt_device_id: str
   debug_enabled: bool

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.28
+
+- Increase data density: lower the default `frigate_sample_interval_minutes` from 10 to 5,
+  and widen the allowed range to `float(0.25,60)` so sub-minute polling (down to 15s) is
+  possible for anyone who wants denser readings. `Worker` now retries a failed snapshot
+  fetch or detection up to `FrigateOptions.SnapshotRetryCount` (default 2) times, 5s apart,
+  within the same cycle instead of silently dropping that interval's data point on a single
+  flaky camera/network hiccup.
+
 ## 0.1.27
 
 - Raise the band-detection acceptance threshold (`MinStepContrast` 15 -> 55): without
