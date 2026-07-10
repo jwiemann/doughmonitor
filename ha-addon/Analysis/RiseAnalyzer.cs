@@ -26,12 +26,20 @@ public sealed class RiseAnalyzer
     private DateTimeOffset _sessionStart;
     private bool _peaked;
     private SigmoidFit? _lastFit;
+    private double? _lastAcceptedHeightPx;
+    private DateTimeOffset? _lastMeasurementTime;
+    private int _implausibleStreak;
 
     public RiseAnalyzer(AnalysisOptions options)
     {
         _options = options;
         RestoreState();
     }
+
+    /// <summary>The dough height (px) the current session's rise percentage is measured
+    /// against, or null when there is no active session. Used to draw a "session start"
+    /// reference line on the debug image.</summary>
+    public double? BaselineDoughHeightPx => _baselineDoughHeightPx;
 
     public RiseReading Reset()
     {
@@ -40,24 +48,48 @@ public sealed class RiseAnalyzer
         return new RiseReading(DateTimeOffset.UtcNow, 0, null, null, null, false, NewSession: true);
     }
 
-    public RiseReading Analyze(LevelMeasurement m)
+    public RiseReading? Analyze(LevelMeasurement m)
     {
+        var hasActiveSession = _baselineDoughHeightPx is not null && !SessionExpired(m.Time);
+        // Physical plausibility gate: reject a raw reading that implies the dough moved
+        // faster than organic fermentation can (camera glitch, misdetected frame - e.g.
+        // locking onto glare or the jar's own base) before it ever reaches the smoothing
+        // window, rather than letting a single bad frame drag the median toward it.
+        // But real dough handling - feeding the starter, punching down before shaping, a
+        // fold that briefly puffs the dough up before it settles into a bigger container -
+        // also moves the surface faster than this budget allows, and unlike a one-off
+        // misdetected frame, it persists across samples instead of reverting on the next
+        // one. Cap how many consecutive frames the gate can reject so a real handling event
+        // is only briefly "unavailable" instead of locked out until enough elapsed time
+        // inflates the budget past it; downstream, the existing collapse-reset logic
+        // recognizes a genuine sustained drop and starts a fresh baseline for it.
+        if (hasActiveSession && IsImplausibleJump(m.DoughHeightPx, m.Time))
+        {
+            _implausibleStreak++;
+            if (_implausibleStreak <= _options.MaxImplausibleJumpRejects) return null;
+            // Streak exhausted: a misdetected frame doesn't repeat identically this many
+            // times in a row, so trust it as a real (if abrupt) change and stop rejecting.
+        }
+        _implausibleStreak = 0;
+
         // Smooth the raw per-frame pixel height first: a single noisy/condensation-affected
         // frame would otherwise propagate straight into the baseline and every downstream
         // percentage, slope and fit computed from it.
         var smoothedHeightPx = Smooth(m.DoughHeightPx);
-        if (_baselineDoughHeightPx is null || SessionExpired(m.Time))
+        _lastAcceptedHeightPx = smoothedHeightPx;
+        _lastMeasurementTime = m.Time;
+        if (!hasActiveSession)
         {
             ResetSession(m.Time, smoothedHeightPx);
             SaveState();
-            return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true);
+            return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true, SessionStart: _sessionStart);
         }
         var risePercent = (smoothedHeightPx - _baselineDoughHeightPx.Value) / _baselineDoughHeightPx.Value * 100.0;
         if (IsCollapseReset(risePercent))
         {
             ResetSession(m.Time, smoothedHeightPx);
             SaveState();
-            return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true);
+            return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true, SessionStart: _sessionStart);
         }
         _samples.Add(new Sample(m.Time, risePercent));
         var slope = ComputeWindowSlope(m.Time);
@@ -80,7 +112,8 @@ public sealed class RiseAnalyzer
             fit is null ? null : Math.Round(ClampPredictedPeak(fit.L * _options.PeakFraction), 0),
             fit is null ? null : _sessionStart.AddHours(fit.HoursAtFraction(_options.PeakFraction)),
             _peaked,
-            NewSession: false);
+            NewSession: false,
+            SessionStart: _sessionStart);
     }
 
     private double Smooth(double rawHeightPx)
@@ -89,6 +122,15 @@ public sealed class RiseAnalyzer
         while (_heightWindow.Count > _options.MedianWindowSize)
             _heightWindow.Dequeue();
         return _heightWindow.Median();
+    }
+
+    private bool IsImplausibleJump(double rawHeightPx, DateTimeOffset now)
+    {
+        if (_lastAcceptedHeightPx is null || _lastMeasurementTime is null) return false;
+        var minutes = (now - _lastMeasurementTime.Value).TotalMinutes;
+        if (minutes <= 0) return true; // non-advancing or out-of-order timestamp
+        var maxDelta = _options.MaxRisePxPerMinute * minutes + _options.JitterTolerancePx;
+        return Math.Abs(rawHeightPx - _lastAcceptedHeightPx.Value) > maxDelta;
     }
 
     private static double ClampRisePercent(double value) =>
@@ -182,7 +224,17 @@ public sealed class RiseAnalyzer
             _sessionStart = state.SessionStart;
             _peaked = state.Peaked;
             if (_samples.Count > 0 && SessionExpired(DateTimeOffset.UtcNow))
+            {
                 ResetSession(DateTimeOffset.UtcNow, null);
+            }
+            else if (_samples.Count > 0 && _baselineDoughHeightPx is not null)
+            {
+                // Reconstruct the plausibility gate's reference point from the last persisted
+                // sample so a restart doesn't leave the very next reading ungated.
+                var last = _samples[^1];
+                _lastAcceptedHeightPx = _baselineDoughHeightPx.Value * (1 + last.RisePercent / 100.0);
+                _lastMeasurementTime = last.Time;
+            }
         }
         catch (Exception)
         {

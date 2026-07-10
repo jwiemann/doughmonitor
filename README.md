@@ -39,7 +39,7 @@ Monitor sourdough starter rise from Frigate camera snapshots, publish readings t
 | `frigate_base_url` | Your Home Assistant/Frigate base URL |
 | `frigate_camera` | Camera entity name in Frigate |
 | `frigate_access_token` | Long-lived access token (create in HA profile) |
-| `frigate_sample_interval_minutes` | Interval between snapshots (1–60 min) |
+| `frigate_sample_interval_minutes` | Interval between snapshots (0.25–60 min, default 1) |
 | `mqtt_host` | MQTT broker hostname |
 | `mqtt_port` | MQTT broker port |
 | `mqtt_username` | MQTT username |
@@ -67,7 +67,7 @@ Configure via `appsettings.json` or environment variables (e.g. `Monitor__Frigat
       "BaseUrl": "http://homeassistant.local:8123",
       "Camera": "battery_cam",
       "AccessToken": "",
-      "SampleIntervalMinutes": 10
+      "SampleIntervalMinutes": 1
     },
     "Mqtt": {
       "Host": "core-mosquitto",

@@ -26,9 +26,41 @@ public class RiseAnalyzerTests
             new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero), 100, 0, 200));
         var next = analyzer.Analyze(
             new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 5, 0, TimeSpan.Zero), 80, 0, 200));
-        Assert.True(initial.NewSession);
-        Assert.False(next.NewSession);
+        Assert.NotNull(initial);
+        Assert.NotNull(next);
+        Assert.True(initial!.NewSession);
+        Assert.False(next!.NewSession);
         Assert.Equal(20d, next.RisePercent);
+    }
+
+    [Fact]
+    public void Analyze_ExposesBaselineHeightAndSessionStartForDebugOverlayAndMqtt()
+    {
+        var analyzer = new RiseAnalyzer(
+            new AnalysisOptions
+            {
+                SlopeWindowMinutes = 40,
+                ResetDropFraction = 0.25,
+                MinSamplesForFit = 3,
+                MaxEtaRelativeStdError = 0.15,
+                PeakConfirmWindows = 3,
+                MaxSessionHours = 36,
+                StateFilePath = null
+            });
+        var start = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        Assert.Null(analyzer.BaselineDoughHeightPx);
+        var initial = analyzer.Analyze(new LevelMeasurement(start, 100, 0, 200));
+        Assert.NotNull(initial);
+        // DoughHeightPx = 200 - 100 = 100 becomes both the baseline used for rise% and the
+        // session's recorded start time.
+        Assert.Equal(100d, analyzer.BaselineDoughHeightPx);
+        Assert.Equal(start, initial!.SessionStart);
+        var next = analyzer.Analyze(new LevelMeasurement(start.AddMinutes(5), 80, 0, 200));
+        Assert.NotNull(next);
+        // A later sample within the same session keeps reporting the original start time,
+        // not the current sample's time.
+        Assert.Equal(start, next!.SessionStart);
+        Assert.Equal(100d, analyzer.BaselineDoughHeightPx);
     }
 
     [Fact]
@@ -47,10 +79,12 @@ public class RiseAnalyzerTests
             });
         var initial = analyzer.Analyze(
             new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero), 100, 0, 200));
+        Assert.NotNull(initial);
         // DoughHeightPx = 200 - 120 = 80, below baseline of 100 => -20% clamped to 0
         var next = analyzer.Analyze(
             new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 5, 0, TimeSpan.Zero), 120, 0, 200));
-        Assert.Equal(0, next.RisePercent);
+        Assert.NotNull(next);
+        Assert.Equal(0, next!.RisePercent);
     }
 
     [Fact]
@@ -69,10 +103,76 @@ public class RiseAnalyzerTests
             });
         var initial = analyzer.Analyze(
             new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero), 100, 0, 200));
-        // DoughHeightPx = 200 - (-500) = 700, baseline = 100 => 600% clamped to 500
+        Assert.NotNull(initial);
+        // DoughHeightPx = 200 - (-500) = 700, baseline = 100 => 600% rise. Spread over 4 hours
+        // so the plausibility gate (default 4px/min budget) treats it as a legitimate slow
+        // change rather than an implausible jump, exercising the clamp instead of the gate.
+        var next = analyzer.Analyze(
+            new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 4, 0, 0, TimeSpan.Zero), -500, 0, 200));
+        Assert.NotNull(next);
+        Assert.Equal(500, next!.RisePercent);
+    }
+
+    [Fact]
+    public void Analyze_RejectsImplausibleJumpAsUnavailable()
+    {
+        var analyzer = new RiseAnalyzer(
+            new AnalysisOptions
+            {
+                SlopeWindowMinutes = 40,
+                ResetDropFraction = 0.25,
+                MinSamplesForFit = 3,
+                MaxEtaRelativeStdError = 0.15,
+                PeakConfirmWindows = 3,
+                MaxSessionHours = 36,
+                StateFilePath = null
+            });
+        var initial = analyzer.Analyze(
+            new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero), 100, 0, 200));
+        Assert.NotNull(initial);
+        // Same 600px jump as the clamp test above, but only 5 minutes later: at the default
+        // 4px/min + 6px budget that's physically impossible for real dough, so it should be
+        // rejected outright (e.g. detection locking onto glare/jar base) instead of reported.
         var next = analyzer.Analyze(
             new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 5, 0, TimeSpan.Zero), -500, 0, 200));
-        Assert.Equal(500, next.RisePercent);
+        Assert.Null(next);
+    }
+
+    [Fact]
+    public void Analyze_AcceptsASustainedJumpAfterRejectStreakIsExhausted()
+    {
+        // Models a real handling event (feeding the starter, punching down, folding): the
+        // surface moves faster than organic fermentation ever could, but - unlike a one-off
+        // misdetected frame - the new height keeps showing up on every subsequent sample
+        // instead of reverting. The gate should stop rejecting once that repeats past
+        // MaxImplausibleJumpRejects, rather than blacking out data until the time-based
+        // budget alone catches up (which could take tens of minutes for a big drop).
+        var analyzer = new RiseAnalyzer(
+            new AnalysisOptions
+            {
+                SlopeWindowMinutes = 40,
+                ResetDropFraction = 0.25,
+                MinSamplesForFit = 3,
+                MaxEtaRelativeStdError = 0.15,
+                PeakConfirmWindows = 3,
+                MaxSessionHours = 36,
+                MaxImplausibleJumpRejects = 2,
+                StateFilePath = null
+            });
+        var initial = analyzer.Analyze(
+            new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero), 100, 0, 200));
+        Assert.NotNull(initial);
+        // Same 600px jump repeated every 5 minutes: rejected for the first 2 (the configured
+        // streak budget), then accepted on the 3rd instead of staying unavailable.
+        var first = analyzer.Analyze(
+            new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 5, 0, TimeSpan.Zero), -500, 0, 200));
+        var second = analyzer.Analyze(
+            new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 10, 0, TimeSpan.Zero), -500, 0, 200));
+        var third = analyzer.Analyze(
+            new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 15, 0, TimeSpan.Zero), -500, 0, 200));
+        Assert.Null(first);
+        Assert.Null(second);
+        Assert.NotNull(third);
     }
 
     [Fact]
@@ -107,7 +207,8 @@ public class RiseAnalyzerTests
             // A fresh instance reading the persisted file must not throw and must recover the session.
             var restored = new RiseAnalyzer(options);
             var next = restored.Analyze(new LevelMeasurement(start.AddMinutes(35), 70, 0, 200));
-            Assert.False(next.NewSession);
+            Assert.NotNull(next);
+            Assert.False(next!.NewSession);
         }
         finally
         {

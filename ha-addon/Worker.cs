@@ -52,16 +52,11 @@ public sealed class Worker(
 
     private async Task SampleOnceAsync(CancellationToken ct)
     {
-        var jpeg = await frigate.GetLatestSnapshotAsync(ct);
+        var (jpeg, measurement) = await CaptureWithRetriesAsync(ct);
         if (jpeg is null)
         {
             logger.LogWarning("No snapshot from Frigate");
             return;
-        }
-        var measurement = detector.Measure(jpeg, DateTimeOffset.Now);
-        if (measurement is not null && options.Vision.RoiY is not null)
-        {
-            measurement = JarLevelDetector.AdjustMeasurementForRoi(measurement, options.Vision.RoiY.Value);
         }
 
         // Publish debug image and diagnostics via MQTT when debug mode is enabled
@@ -76,6 +71,12 @@ public sealed class Worker(
             return;
         }
         var reading = analyzer.Analyze(measurement);
+        if (reading is null)
+        {
+            logger.LogWarning("Rejected implausible dough-height jump; treating cycle as unavailable");
+            await mqtt.PublishUnavailableMeasurementAsync(ct);
+            return;
+        }
         await mqtt.PublishReadingAsync(reading, ct);
         logger.LogInformation(
             "Rise {Rise}% | Rate {Rate}%/h | ETA {Eta} | Peaked {Peaked}",
@@ -83,5 +84,39 @@ public sealed class Worker(
             reading.RiseRatePercentPerHour,
             reading.PredictedPeakTime,
             reading.Peaked);
+    }
+
+    /// <summary>Fetches a snapshot and runs detection, retrying a few times within this
+    /// cycle on transient failure (bad frame, camera hiccup) so a single flaky attempt
+    /// doesn't drop a whole sampling interval's worth of data.</summary>
+    private async Task<(byte[]? Jpeg, LevelMeasurement? Measurement)> CaptureWithRetriesAsync(CancellationToken ct)
+    {
+        // Read once per cycle: it reflects the session as it stood before this cycle's
+        // measurement, which is exactly the "session start" the debug image should mark.
+        var sessionBaselineHeightPx = analyzer.BaselineDoughHeightPx;
+        byte[]? jpeg = null;
+        LevelMeasurement? measurement = null;
+        for (var attempt = 0; attempt <= options.Frigate.SnapshotRetryCount; attempt++)
+        {
+            jpeg = await frigate.GetLatestSnapshotAsync(ct);
+            if (jpeg is not null)
+            {
+                measurement = detector.Measure(jpeg, DateTimeOffset.Now, sessionBaselineHeightPx);
+                if (measurement is not null && options.Vision.RoiY is not null)
+                {
+                    measurement = JarLevelDetector.AdjustMeasurementForRoi(measurement, options.Vision.RoiY.Value);
+                }
+                if (measurement is not null) break;
+            }
+            if (attempt < options.Frigate.SnapshotRetryCount)
+            {
+                logger.LogWarning(
+                    "Snapshot/detection attempt {Attempt} failed; retrying in {Delay}s",
+                    attempt + 1,
+                    options.Frigate.SnapshotRetryDelaySeconds);
+                await Task.Delay(TimeSpan.FromSeconds(options.Frigate.SnapshotRetryDelaySeconds), ct);
+            }
+        }
+        return (jpeg, measurement);
     }
 }

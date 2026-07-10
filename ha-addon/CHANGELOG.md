@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.1.32
+
+- Add a "session start" reference line and label to the debug image: drawn at the dough
+  height recorded when the current session began, re-derived each frame from that frame's
+  detected jar bottom (which doesn't move between frames) so it stays correctly placed as
+  the dough rises.
+- Publish the session start time as `session_start` on the MQTT state topic and as a new
+  "Session Started" HA sensor (`device_class: timestamp`), alongside the existing rise/rate/
+  peak-ETA sensors.
+
+## 0.1.31
+
+- Fix the new plausibility gate (0.1.30) locking out real dough handling for a long time:
+  feeding the starter, punching down before shaping, or a fold that briefly puffs the dough
+  up before it settles into a bigger container all move the surface faster than the gate's
+  organic-fermentation rate budget, and unlike a misdetected frame, the new height doesn't
+  revert on the next sample. Previously the gate would keep rejecting every frame until
+  enough elapsed real time inflated the budget past the jump - tens of minutes for a large
+  drop. `AnalysisOptions.MaxImplausibleJumpRejects` (default 2) now caps consecutive
+  rejections, so a real handling event is unavailable for at most a couple of cycles before
+  it's accepted and handed to the existing collapse-reset logic.
+
+## 0.1.30
+
+- Port `RiseAnalyzer`'s missing physical-plausibility gate from the unused `GrowthTracker`
+  prototype: a raw reading implying more than `MaxRisePxPerMinute` (default 4px/min, plus a
+  `JitterTolerancePx` allowance) of movement since the last accepted sample is now rejected
+  outright instead of being smoothed in, so a single misdetected frame (glare, jar-base
+  lock-on) can no longer drag the reported rise. `RiseAnalyzer.Analyze` returns `null` for a
+  rejected reading, which `Worker` now treats the same as an unavailable measurement.
+- Delete `GrowthTracker` and its exclusive supporting types (`GrowthOptions`,
+  `GrowthAnalysis`, `GrowthPhase`, `GrowthSample`): a parallel analyzer implementation that
+  was never wired into the app (`RiseAnalyzer` is the one actually running). Its useful idea
+  (the plausibility gate above) has been folded into `RiseAnalyzer`; the rest duplicated
+  functionality `RiseAnalyzer` already has (rolling-median smoothing, sigmoid-based ETA) with
+  a cruder fit method.
+
+## 0.1.29
+
+- Lower the default `frigate_sample_interval_minutes` further, from 5 to 1.
+
+## 0.1.28
+
+- Increase data density: lower the default `frigate_sample_interval_minutes` from 10 to 5,
+  and widen the allowed range to `float(0.25,60)` so sub-minute polling (down to 15s) is
+  possible for anyone who wants denser readings. `Worker` now retries a failed snapshot
+  fetch or detection up to `FrigateOptions.SnapshotRetryCount` (default 2) times, 5s apart,
+  within the same cycle instead of silently dropping that interval's data point on a single
+  flaky camera/network hiccup.
+
 ## 0.1.27
 
 - Raise the band-detection acceptance threshold (`MinStepContrast` 15 -> 55): without
