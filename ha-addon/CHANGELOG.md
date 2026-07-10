@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.29
+
+- Lower the default `frigate_sample_interval_minutes` further, from 5 to 1.
+
 ## 0.1.28
 
 - Increase data density: lower the default `frigate_sample_interval_minutes` from 10 to 5,

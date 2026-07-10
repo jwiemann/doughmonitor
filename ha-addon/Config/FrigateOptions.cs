@@ -12,7 +12,7 @@ public sealed class FrigateOptions
 
     /// <summary>Minutes between sampling cycles. Accepts fractional values, so sub-minute
     /// polling (e.g. 0.25 = 15s) is possible for users who want denser data.</summary>
-    public double SampleIntervalMinutes { get; init; } = 5;
+    public double SampleIntervalMinutes { get; init; } = 1;
 
     /// <summary>Extra attempts within a single cycle if the snapshot fetch or detection
     /// fails, so a transient camera/network hiccup doesn't silently drop a whole interval's
