@@ -31,5 +31,15 @@ public sealed class AnalysisOptions
     /// fallback when no sigmoid fit is available yet.</summary>
     public double MinRisePercentForPeak { get; init; } = 25;
 
+    /// <summary>Physical plausibility gate: dough cannot rise or fall faster than this many
+    /// pixels per minute. A raw reading that implies a faster change than
+    /// (MaxRisePxPerMinute * elapsed minutes + JitterTolerancePx) is rejected outright
+    /// (camera glitch, misdetected frame) rather than smoothed in and reported.</summary>
+    public double MaxRisePxPerMinute { get; init; } = 4.0;
+
+    /// <summary>Flat allowance added on top of the rate-based plausibility budget, so normal
+    /// per-frame jitter between consecutive samples isn't rejected.</summary>
+    public double JitterTolerancePx { get; init; } = 6.0;
+
     public string? StateFilePath { get; init; } = "sourdough_state.json";
 }

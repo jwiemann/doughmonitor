@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.30
+
+- Port `RiseAnalyzer`'s missing physical-plausibility gate from the unused `GrowthTracker`
+  prototype: a raw reading implying more than `MaxRisePxPerMinute` (default 4px/min, plus a
+  `JitterTolerancePx` allowance) of movement since the last accepted sample is now rejected
+  outright instead of being smoothed in, so a single misdetected frame (glare, jar-base
+  lock-on) can no longer drag the reported rise. `RiseAnalyzer.Analyze` returns `null` for a
+  rejected reading, which `Worker` now treats the same as an unavailable measurement.
+- Delete `GrowthTracker` and its exclusive supporting types (`GrowthOptions`,
+  `GrowthAnalysis`, `GrowthPhase`, `GrowthSample`): a parallel analyzer implementation that
+  was never wired into the app (`RiseAnalyzer` is the one actually running). Its useful idea
+  (the plausibility gate above) has been folded into `RiseAnalyzer`; the rest duplicated
+  functionality `RiseAnalyzer` already has (rolling-median smoothing, sigmoid-based ETA) with
+  a cruder fit method.
+
 ## 0.1.29
 
 - Lower the default `frigate_sample_interval_minutes` further, from 5 to 1.

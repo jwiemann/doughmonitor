@@ -26,6 +26,8 @@ public sealed class RiseAnalyzer
     private DateTimeOffset _sessionStart;
     private bool _peaked;
     private SigmoidFit? _lastFit;
+    private double? _lastAcceptedHeightPx;
+    private DateTimeOffset? _lastMeasurementTime;
 
     public RiseAnalyzer(AnalysisOptions options)
     {
@@ -40,13 +42,22 @@ public sealed class RiseAnalyzer
         return new RiseReading(DateTimeOffset.UtcNow, 0, null, null, null, false, NewSession: true);
     }
 
-    public RiseReading Analyze(LevelMeasurement m)
+    public RiseReading? Analyze(LevelMeasurement m)
     {
+        var hasActiveSession = _baselineDoughHeightPx is not null && !SessionExpired(m.Time);
+        // Physical plausibility gate: reject a raw reading that implies the dough moved
+        // faster than it physically can (camera glitch, misdetected frame - e.g. locking
+        // onto glare or the jar's own base) before it ever reaches the smoothing window,
+        // rather than letting a single bad frame drag the median toward it.
+        if (hasActiveSession && IsImplausibleJump(m.DoughHeightPx, m.Time)) return null;
+
         // Smooth the raw per-frame pixel height first: a single noisy/condensation-affected
         // frame would otherwise propagate straight into the baseline and every downstream
         // percentage, slope and fit computed from it.
         var smoothedHeightPx = Smooth(m.DoughHeightPx);
-        if (_baselineDoughHeightPx is null || SessionExpired(m.Time))
+        _lastAcceptedHeightPx = smoothedHeightPx;
+        _lastMeasurementTime = m.Time;
+        if (!hasActiveSession)
         {
             ResetSession(m.Time, smoothedHeightPx);
             SaveState();
@@ -89,6 +100,15 @@ public sealed class RiseAnalyzer
         while (_heightWindow.Count > _options.MedianWindowSize)
             _heightWindow.Dequeue();
         return _heightWindow.Median();
+    }
+
+    private bool IsImplausibleJump(double rawHeightPx, DateTimeOffset now)
+    {
+        if (_lastAcceptedHeightPx is null || _lastMeasurementTime is null) return false;
+        var minutes = (now - _lastMeasurementTime.Value).TotalMinutes;
+        if (minutes <= 0) return true; // non-advancing or out-of-order timestamp
+        var maxDelta = _options.MaxRisePxPerMinute * minutes + _options.JitterTolerancePx;
+        return Math.Abs(rawHeightPx - _lastAcceptedHeightPx.Value) > maxDelta;
     }
 
     private static double ClampRisePercent(double value) =>
@@ -182,7 +202,17 @@ public sealed class RiseAnalyzer
             _sessionStart = state.SessionStart;
             _peaked = state.Peaked;
             if (_samples.Count > 0 && SessionExpired(DateTimeOffset.UtcNow))
+            {
                 ResetSession(DateTimeOffset.UtcNow, null);
+            }
+            else if (_samples.Count > 0 && _baselineDoughHeightPx is not null)
+            {
+                // Reconstruct the plausibility gate's reference point from the last persisted
+                // sample so a restart doesn't leave the very next reading ungated.
+                var last = _samples[^1];
+                _lastAcceptedHeightPx = _baselineDoughHeightPx.Value * (1 + last.RisePercent / 100.0);
+                _lastMeasurementTime = last.Time;
+            }
         }
         catch (Exception)
         {

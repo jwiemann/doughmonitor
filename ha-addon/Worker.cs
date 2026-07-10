@@ -71,6 +71,12 @@ public sealed class Worker(
             return;
         }
         var reading = analyzer.Analyze(measurement);
+        if (reading is null)
+        {
+            logger.LogWarning("Rejected implausible dough-height jump; treating cycle as unavailable");
+            await mqtt.PublishUnavailableMeasurementAsync(ct);
+            return;
+        }
         await mqtt.PublishReadingAsync(reading, ct);
         logger.LogInformation(
             "Rise {Rise}% | Rate {Rate}%/h | ETA {Eta} | Peaked {Peaked}",
