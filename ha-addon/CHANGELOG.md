@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.31
+
+- Fix the new plausibility gate (0.1.30) locking out real dough handling for a long time:
+  feeding the starter, punching down before shaping, or a fold that briefly puffs the dough
+  up before it settles into a bigger container all move the surface faster than the gate's
+  organic-fermentation rate budget, and unlike a misdetected frame, the new height doesn't
+  revert on the next sample. Previously the gate would keep rejecting every frame until
+  enough elapsed real time inflated the budget past the jump - tens of minutes for a large
+  drop. `AnalysisOptions.MaxImplausibleJumpRejects` (default 2) now caps consecutive
+  rejections, so a real handling event is unavailable for at most a couple of cycles before
+  it's accepted and handed to the existing collapse-reset logic.
+
 ## 0.1.30
 
 - Port `RiseAnalyzer`'s missing physical-plausibility gate from the unused `GrowthTracker`

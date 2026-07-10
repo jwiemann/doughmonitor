@@ -41,5 +41,13 @@ public sealed class AnalysisOptions
     /// per-frame jitter between consecutive samples isn't rejected.</summary>
     public double JitterTolerancePx { get; init; } = 6.0;
 
+    /// <summary>How many consecutive frames the plausibility gate above may reject before
+    /// giving up and accepting the reading anyway. Real dough handling - feeding the
+    /// starter, punching down, folding - moves the surface faster than the gate's budget
+    /// allows but keeps showing the new height on the next sample, unlike a one-off
+    /// misdetected frame that reverts. Bounds how long a legitimate handling event is
+    /// reported as unavailable.</summary>
+    public int MaxImplausibleJumpRejects { get; init; } = 2;
+
     public string? StateFilePath { get; init; } = "sourdough_state.json";
 }

@@ -28,6 +28,7 @@ public sealed class RiseAnalyzer
     private SigmoidFit? _lastFit;
     private double? _lastAcceptedHeightPx;
     private DateTimeOffset? _lastMeasurementTime;
+    private int _implausibleStreak;
 
     public RiseAnalyzer(AnalysisOptions options)
     {
@@ -46,10 +47,25 @@ public sealed class RiseAnalyzer
     {
         var hasActiveSession = _baselineDoughHeightPx is not null && !SessionExpired(m.Time);
         // Physical plausibility gate: reject a raw reading that implies the dough moved
-        // faster than it physically can (camera glitch, misdetected frame - e.g. locking
-        // onto glare or the jar's own base) before it ever reaches the smoothing window,
-        // rather than letting a single bad frame drag the median toward it.
-        if (hasActiveSession && IsImplausibleJump(m.DoughHeightPx, m.Time)) return null;
+        // faster than organic fermentation can (camera glitch, misdetected frame - e.g.
+        // locking onto glare or the jar's own base) before it ever reaches the smoothing
+        // window, rather than letting a single bad frame drag the median toward it.
+        // But real dough handling - feeding the starter, punching down before shaping, a
+        // fold that briefly puffs the dough up before it settles into a bigger container -
+        // also moves the surface faster than this budget allows, and unlike a one-off
+        // misdetected frame, it persists across samples instead of reverting on the next
+        // one. Cap how many consecutive frames the gate can reject so a real handling event
+        // is only briefly "unavailable" instead of locked out until enough elapsed time
+        // inflates the budget past it; downstream, the existing collapse-reset logic
+        // recognizes a genuine sustained drop and starts a fresh baseline for it.
+        if (hasActiveSession && IsImplausibleJump(m.DoughHeightPx, m.Time))
+        {
+            _implausibleStreak++;
+            if (_implausibleStreak <= _options.MaxImplausibleJumpRejects) return null;
+            // Streak exhausted: a misdetected frame doesn't repeat identically this many
+            // times in a row, so trust it as a real (if abrupt) change and stop rejecting.
+        }
+        _implausibleStreak = 0;
 
         // Smooth the raw per-frame pixel height first: a single noisy/condensation-affected
         // frame would otherwise propagate straight into the baseline and every downstream

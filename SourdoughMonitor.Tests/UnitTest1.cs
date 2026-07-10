@@ -109,6 +109,43 @@ public class RiseAnalyzerTests
     }
 
     [Fact]
+    public void Analyze_AcceptsASustainedJumpAfterRejectStreakIsExhausted()
+    {
+        // Models a real handling event (feeding the starter, punching down, folding): the
+        // surface moves faster than organic fermentation ever could, but - unlike a one-off
+        // misdetected frame - the new height keeps showing up on every subsequent sample
+        // instead of reverting. The gate should stop rejecting once that repeats past
+        // MaxImplausibleJumpRejects, rather than blacking out data until the time-based
+        // budget alone catches up (which could take tens of minutes for a big drop).
+        var analyzer = new RiseAnalyzer(
+            new AnalysisOptions
+            {
+                SlopeWindowMinutes = 40,
+                ResetDropFraction = 0.25,
+                MinSamplesForFit = 3,
+                MaxEtaRelativeStdError = 0.15,
+                PeakConfirmWindows = 3,
+                MaxSessionHours = 36,
+                MaxImplausibleJumpRejects = 2,
+                StateFilePath = null
+            });
+        var initial = analyzer.Analyze(
+            new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero), 100, 0, 200));
+        Assert.NotNull(initial);
+        // Same 600px jump repeated every 5 minutes: rejected for the first 2 (the configured
+        // streak budget), then accepted on the 3rd instead of staying unavailable.
+        var first = analyzer.Analyze(
+            new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 5, 0, TimeSpan.Zero), -500, 0, 200));
+        var second = analyzer.Analyze(
+            new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 10, 0, TimeSpan.Zero), -500, 0, 200));
+        var third = analyzer.Analyze(
+            new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 15, 0, TimeSpan.Zero), -500, 0, 200));
+        Assert.Null(first);
+        Assert.Null(second);
+        Assert.NotNull(third);
+    }
+
+    [Fact]
     public void Analyze_PersistsAndRestoresStateAcrossRestarts()
     {
         var stateFile = Path.Combine(Path.GetTempPath(), $"sourdough_state_test_{Guid.NewGuid():N}.json");
