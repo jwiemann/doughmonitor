@@ -29,6 +29,7 @@ public sealed class RiseAnalyzer
     private double? _lastAcceptedHeightPx;
     private DateTimeOffset? _lastMeasurementTime;
     private int _implausibleStreak;
+    private int _collapseStreak;
 
     public RiseAnalyzer(AnalysisOptions options)
     {
@@ -87,10 +88,20 @@ public sealed class RiseAnalyzer
         var risePercent = (smoothedHeightPx - _baselineDoughHeightPx.Value) / _baselineDoughHeightPx.Value * 100.0;
         if (IsCollapseReset(risePercent))
         {
+            // A single frame that looks like a collapse is exactly what a jar reappearing
+            // after a detection gap (occlusion, glare while reacquiring) tends to produce:
+            // the vision pipeline hasn't locked back onto the true surface yet. A genuine
+            // collapse (punch-down, deflating starter) keeps reporting the lower level on
+            // the next samples instead of reverting, so require it to persist for a few
+            // consecutive samples before wiping the session; treat the unconfirmed ones as
+            // unavailable rather than resetting on the first sighting.
+            _collapseStreak++;
+            if (_collapseStreak < _options.CollapseConfirmSamples) return null;
             ResetSession(m.Time, smoothedHeightPx);
             SaveState();
             return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true, SessionStart: _sessionStart);
         }
+        _collapseStreak = 0;
         _samples.Add(new Sample(m.Time, risePercent));
         var slope = ComputeWindowSlope(m.Time);
         if (slope is not null)
@@ -190,6 +201,7 @@ public sealed class RiseAnalyzer
         _sessionStart = start;
         _peaked = false;
         _lastFit = null;
+        _collapseStreak = 0;
     }
 
     private void SaveState()

@@ -1,6 +1,6 @@
 name: Sourdough Monitor
 url: https://github.com/jwiemann/doughmonitor
-version: "0.1.32"
+version: "0.1.33"
 slug: sourdough_monitor
 description: Monitor sourdough rise from Frigate camera snapshots with MQTT discovery
 arch:

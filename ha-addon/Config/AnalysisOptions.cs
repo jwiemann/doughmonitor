@@ -49,5 +49,13 @@ public sealed class AnalysisOptions
     /// reported as unavailable.</summary>
     public int MaxImplausibleJumpRejects { get; init; } = 2;
 
+    /// <summary>How many consecutive samples must all look like a collapse (see
+    /// <see cref="ResetDropFraction"/>) before the session is actually reset. A jar
+    /// reappearing after a detection gap (occlusion, glare while the vision pipeline
+    /// reacquires the surface) often produces exactly one frame that looks like a big drop;
+    /// a real collapse (punch-down, deflating starter) keeps reporting the lower level
+    /// instead of reverting on the next sample.</summary>
+    public int CollapseConfirmSamples { get; init; } = 3;
+
     public string? StateFilePath { get; init; } = "sourdough_state.json";
 }

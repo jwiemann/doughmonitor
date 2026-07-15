@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.33
+
+- Stop auto-resetting the session on a single collapse-looking reading. A jar reappearing
+  after a detection gap (moved out of frame, occlusion, glare while the vision pipeline
+  reacquires the surface) would often produce one or two off readings before settling back
+  onto the true level, and those alone could trip the collapse-reset threshold and wipe an
+  in-progress session. `AnalysisOptions.CollapseConfirmSamples` (default 3) now requires the
+  apparent collapse to persist across that many consecutive samples - which a real punch-down
+  or deflating starter does, but a transient misdetection doesn't - before the session is
+  actually reset.
+
 ## 0.1.32
 
 - Add a "session start" reference line and label to the debug image: drawn at the dough
