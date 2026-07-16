@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.34
+
+- Move debug output (annotated images) from the app's own install directory to
+  `/share/sourdough_monitor/debug` (requires the add-on's new `map: - share:rw`), so it's
+  reachable via Home Assistant's Samba/File Editor add-ons and survives container rebuilds
+  instead of living inside the container's ephemeral filesystem.
+- Add a daily-rotated `diagnostics-YYYYMMDD.jsonl` sidecar log next to the debug images:
+  one line per sample with the detection method, band contrast, and raw pixel positions, so
+  an exported debug folder carries the numbers behind each image without needing MQTT debug
+  mode captured separately.
+- Automatically prune debug images and diagnostics log files older than
+  `VisionOptions.DebugRetentionHours` (default 48h), so the export folder stays a bounded
+  rolling window instead of accumulating one file per sample forever.
+
 ## 0.1.33
 
 - Stop auto-resetting the session on a single collapse-looking reading. A jar reappearing

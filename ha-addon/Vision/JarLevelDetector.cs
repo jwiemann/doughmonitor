@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 using OpenCvSharp;
 
 using SourdoughMonitor.Analysis;
@@ -61,7 +63,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             if (measurement is not null) return measurement;
         }
         if (options.DebugSaveAnnotatedImages)
-            SaveDebugImage(img, null, null, null, now);
+            SaveDebugImage(img, null, null, null, null, now);
         return null;
     }
 
@@ -84,7 +86,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         var doughTop = FindDoughSurface(columnEdges, columnGray);
         if (doughTop is null)
         {
-            SaveDebugImage(gray, jarColumn, null, null, now);
+            SaveDebugImage(gray, jarColumn, null, null, null, now);
             return null;
         }
         var jarBottom = FindJarBottom(columnEdges, columnGray, doughTop.Value, rect.Height - 1);
@@ -93,7 +95,13 @@ public sealed class JarLevelDetector(VisionOptions options)
         var sessionStartSurfaceY = sessionBaselineHeightPx is not null
             ? (int?)Math.Round(jarColumn.Top + jarBottom - sessionBaselineHeightPx.Value)
             : null;
-        SaveDebugImage(gray, jarColumn, jarColumn.Top + doughTop.Value, sessionStartSurfaceY, now);
+        SaveDebugImage(
+            gray,
+            jarColumn,
+            jarColumn.Top + doughTop.Value,
+            jarColumn.Top + jarBottom,
+            sessionStartSurfaceY,
+            now);
         return new LevelMeasurement(now, jarColumn.Top + doughTop.Value, jarColumn.Top, jarColumn.Top + jarBottom);
     }
 
@@ -188,6 +196,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         Mat image,
         JarColumn? jarColumn,
         int? doughSurfaceY,
+        int? jarBottomY,
         int? sessionStartSurfaceY,
         DateTimeOffset now)
     {
@@ -230,12 +239,76 @@ public sealed class JarLevelDetector(VisionOptions options)
         }
         Cv2.ImEncode(".jpg", color, out var bytes);
         LatestAnnotatedImageBytes = bytes;
-        if (options.DebugSaveAnnotatedImages)
+        if (!options.DebugSaveAnnotatedImages) return;
+        var directory = ResolveDebugDirectory();
+        Directory.CreateDirectory(directory);
+        var fileName = $"{now:yyyyMMdd_HHmmssfff}.jpg";
+        Cv2.ImWrite(Path.Combine(directory, fileName), color);
+        AppendDiagnosticsLogEntry(directory, fileName, jarColumn, doughSurfaceY, jarBottomY, sessionStartSurfaceY, now);
+        PruneOldDebugFiles(directory, now);
+    }
+
+    private string ResolveDebugDirectory() =>
+        Path.IsPathFullyQualified(options.DebugOutputDirectory)
+            ? options.DebugOutputDirectory
+            : Path.Combine(AppContext.BaseDirectory, options.DebugOutputDirectory);
+
+    /// <summary>Appends one JSON line per frame to a daily-rotated sidecar log next to the
+    /// annotated images, so an exported debug folder carries the raw numbers (detection
+    /// method, band contrast, pixel positions) alongside what the images show, instead of
+    /// requiring MQTT debug mode to have been captured separately.</summary>
+    private void AppendDiagnosticsLogEntry(
+        string directory,
+        string imageFileName,
+        JarColumn? jarColumn,
+        int? doughSurfaceY,
+        int? jarBottomY,
+        int? sessionStartSurfaceY,
+        DateTimeOffset now)
+    {
+        var entry = new
         {
-            var directory = Path.Combine(AppContext.BaseDirectory, options.DebugOutputDirectory);
-            Directory.CreateDirectory(directory);
-            var fileName = $"{now:yyyyMMdd_HHmmssfff}.jpg";
-            Cv2.ImWrite(Path.Combine(directory, fileName), color);
+            time = now.ToString("O"),
+            image = imageFileName,
+            method = LastDiagnostics?.Method,
+            band_contrast = LastDiagnostics?.BandContrast,
+            band_top_row = LastDiagnostics?.BandTopRow,
+            final_row = LastDiagnostics?.FinalRow,
+            jar_left_px = jarColumn?.Left,
+            jar_right_px = jarColumn?.Right,
+            jar_top_px = jarColumn?.Top,
+            dough_top_px = doughSurfaceY,
+            jar_bottom_px = jarBottomY,
+            session_start_surface_px = sessionStartSurfaceY
+        };
+        var logPath = Path.Combine(directory, $"diagnostics-{now:yyyyMMdd}.jsonl");
+        File.AppendAllText(logPath, JsonSerializer.Serialize(entry) + Environment.NewLine);
+    }
+
+    /// <summary>Deletes debug images and diagnostics log files older than
+    /// <see cref="VisionOptions.DebugRetentionHours"/> so the export folder stays a bounded,
+    /// recent-only rolling window instead of accumulating one file per sample forever.</summary>
+    private void PruneOldDebugFiles(string directory, DateTimeOffset now)
+    {
+        var cutoff = now.UtcDateTime - TimeSpan.FromHours(options.DebugRetentionHours);
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(directory))
+            {
+                if (File.GetLastWriteTimeUtc(file) >= cutoff) continue;
+                try
+                {
+                    File.Delete(file);
+                }
+                catch (IOException)
+                {
+                    // Best-effort cleanup; a file locked by a concurrent reader (e.g. the
+                    // user copying it out) can simply be retried on the next cycle.
+                }
+            }
+        }
+        catch (IOException)
+        {
         }
     }
 
