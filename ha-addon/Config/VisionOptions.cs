@@ -16,5 +16,15 @@ public sealed class VisionOptions
 
     public bool DebugSaveAnnotatedImages { get; init; } = true;
 
-    public string DebugOutputDirectory { get; init; } = "debug";
+    /// <summary>Where annotated debug images and the per-frame diagnostics log are written.
+    /// Defaults to the Home Assistant add-on's <c>/share</c> mount (requires
+    /// <c>map: - share:rw</c> in config.yaml) so the files are reachable via Samba/File
+    /// Editor and survive container rebuilds, instead of living inside the app's own
+    /// (ephemeral, container-internal) install directory.</summary>
+    public string DebugOutputDirectory { get; init; } = "/share/sourdough_monitor/debug";
+
+    /// <summary>How long saved debug images and diagnostics log entries are kept before
+    /// being deleted automatically, so the export folder stays a bounded, recent-only
+    /// rolling window instead of growing forever.</summary>
+    public double DebugRetentionHours { get; init; } = 48;
 }

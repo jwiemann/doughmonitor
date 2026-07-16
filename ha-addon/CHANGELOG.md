@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.34
+
+- Move debug output (annotated images) from the app's own install directory to
+  `/share/sourdough_monitor/debug` (requires the add-on's new `map: - share:rw`), so it's
+  reachable via Home Assistant's Samba/File Editor add-ons and survives container rebuilds
+  instead of living inside the container's ephemeral filesystem.
+- Add a daily-rotated `diagnostics-YYYYMMDD.jsonl` sidecar log next to the debug images:
+  one line per sample with the detection method, band contrast, and raw pixel positions, so
+  an exported debug folder carries the numbers behind each image without needing MQTT debug
+  mode captured separately.
+- Automatically prune debug images and diagnostics log files older than
+  `VisionOptions.DebugRetentionHours` (default 48h), so the export folder stays a bounded
+  rolling window instead of accumulating one file per sample forever.
+
+## 0.1.33
+
+- Stop auto-resetting the session on a single collapse-looking reading. A jar reappearing
+  after a detection gap (moved out of frame, occlusion, glare while the vision pipeline
+  reacquires the surface) would often produce one or two off readings before settling back
+  onto the true level, and those alone could trip the collapse-reset threshold and wipe an
+  in-progress session. `AnalysisOptions.CollapseConfirmSamples` (default 3) now requires the
+  apparent collapse to persist across that many consecutive samples - which a real punch-down
+  or deflating starter does, but a transient misdetection doesn't - before the session is
+  actually reset.
+
 ## 0.1.32
 
 - Add a "session start" reference line and label to the debug image: drawn at the dough

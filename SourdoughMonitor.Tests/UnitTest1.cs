@@ -176,6 +176,79 @@ public class RiseAnalyzerTests
     }
 
     [Fact]
+    public void Analyze_DoesNotResetSessionOnASingleCollapseLookingSample()
+    {
+        // Models a jar reappearing after a detection gap: the vision pipeline hasn't
+        // reacquired the true surface yet and reports one low frame, then recovers to the
+        // established level on the very next sample. This must not wipe the session.
+        // MedianWindowSize = 1 isolates the collapse-confirmation logic from the separate
+        // smoothing window's own damping behavior.
+        var analyzer = new RiseAnalyzer(
+            new AnalysisOptions
+            {
+                SlopeWindowMinutes = 40,
+                ResetDropFraction = 0.25,
+                MinSamplesForFit = 1000,
+                MaxEtaRelativeStdError = 0.15,
+                PeakConfirmWindows = 3,
+                MaxSessionHours = 36,
+                MedianWindowSize = 1,
+                CollapseConfirmSamples = 3,
+                StateFilePath = null
+            });
+        var start = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        // Baseline: DoughHeightPx = 200 - 100 = 100.
+        analyzer.Analyze(new LevelMeasurement(start, 100, 0, 200));
+        // Establish a real 50% rise (DoughHeightPx = 150) over several samples, 30 minutes
+        // apart so each jump stays within the plausibility gate's rate budget, so
+        // recentMedian > 20 once the collapse check is exercised below.
+        for (var i = 1; i <= 5; i++)
+            analyzer.Analyze(new LevelMeasurement(start.AddMinutes(30 * i), 50, 0, 200));
+        // One low frame (DoughHeightPx = 90, an apparent drop below the 37.5% collapse
+        // threshold), immediately followed by recovery back to the established level: the
+        // drop must be treated as unavailable, not a session reset.
+        var dropped = analyzer.Analyze(new LevelMeasurement(start.AddMinutes(180), 110, 0, 200));
+        var recovered = analyzer.Analyze(new LevelMeasurement(start.AddMinutes(210), 55, 0, 200));
+        Assert.Null(dropped);
+        Assert.NotNull(recovered);
+        Assert.False(recovered!.NewSession);
+    }
+
+    [Fact]
+    public void Analyze_ResetsSessionWhenCollapseIsConfirmedAcrossSamples()
+    {
+        // A genuine collapse (punch-down, deflating starter) keeps reporting the lower
+        // level instead of reverting; once it persists for CollapseConfirmSamples in a row
+        // the session should reset.
+        var analyzer = new RiseAnalyzer(
+            new AnalysisOptions
+            {
+                SlopeWindowMinutes = 40,
+                ResetDropFraction = 0.25,
+                MinSamplesForFit = 1000,
+                MaxEtaRelativeStdError = 0.15,
+                PeakConfirmWindows = 3,
+                MaxSessionHours = 36,
+                MedianWindowSize = 1,
+                CollapseConfirmSamples = 3,
+                StateFilePath = null
+            });
+        var start = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        analyzer.Analyze(new LevelMeasurement(start, 100, 0, 200));
+        for (var i = 1; i <= 5; i++)
+            analyzer.Analyze(new LevelMeasurement(start.AddMinutes(30 * i), 50, 0, 200));
+        // The dough surface drops (DoughHeightPx = 90) and stays dropped on every
+        // subsequent sample, 30 minutes apart.
+        var first = analyzer.Analyze(new LevelMeasurement(start.AddMinutes(180), 110, 0, 200));
+        var second = analyzer.Analyze(new LevelMeasurement(start.AddMinutes(210), 110, 0, 200));
+        var third = analyzer.Analyze(new LevelMeasurement(start.AddMinutes(240), 110, 0, 200));
+        Assert.Null(first);
+        Assert.Null(second);
+        Assert.NotNull(third);
+        Assert.True(third!.NewSession);
+    }
+
+    [Fact]
     public void Analyze_PersistsAndRestoresStateAcrossRestarts()
     {
         var stateFile = Path.Combine(Path.GetTempPath(), $"sourdough_state_test_{Guid.NewGuid():N}.json");
