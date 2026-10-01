@@ -1,11 +1,12 @@
 namespace SourdoughMonitor.Replay;
 
 /// <summary>Per-frame result of a replay run: detection outcome, diagnostics, the measurement
-/// itself, the tracker gate decision and the per-frame rise reading.</summary>
+/// itself, the analyzer's reading decision and the per-frame rise reading.</summary>
 public sealed record ReplayFrameRow(
     string File,
     DateTimeOffset Time,
     string TimeSource,
+    /// <summary>Detector outcome: "detected", "dark_frame", "decode_failed", "no_surface".</summary>
     string Outcome,
     string? Method,
     double? FrameMean,
@@ -19,8 +20,9 @@ public sealed record ReplayFrameRow(
     double? JarTopPx,
     double? JarBottomPx,
     double? DoughHeightPx,
-    double? SmoothedHeightPx,
-    string Gate,
+    /// <summary>"ok" when the analyzer produced a reading, "unavailable" when it gated the
+    /// measurement (implausible jump / collapse confirmation), "" when no measurement existed.</summary>
+    string Reading,
     double? RisePercent,
     double? RiseRatePctPerHour,
     double? PredictedPeakPercent,

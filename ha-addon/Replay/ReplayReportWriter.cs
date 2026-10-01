@@ -23,6 +23,7 @@ public static class ReplayReportWriter
         sb.Append("tr.dark td.outcome{color:#88f;font-weight:bold}");
         sb.Append("tr.no-surface td.outcome,tr.failed td.outcome{color:#c33}");
         sb.Append("tr.rejected td.gate{color:#c33;font-weight:bold}");
+        sb.Append("tr.rejected td.gate::after{content:\" ⚠\"}");
         sb.Append(".stat{display:inline-block;margin:2px 12px 2px 0;padding:4px 10px;background:#fff;border:1px solid #ddd;border-radius:4px}");
         sb.Append(".thumb{max-width:220px;max-height:220px;display:block;margin:2px}");
         sb.Append("</style></head><body>");
@@ -41,19 +42,10 @@ public static class ReplayReportWriter
             + $"<span class=\"stat\">Dark {summary.DarkFrames}</span>"
             + $"<span class=\"stat\">No surface {summary.NoSurface}</span>"
             + $"<span class=\"stat\">Decode failed {summary.DecodeFailed}</span>"
-            + $"<span class=\"stat\">Gate rejected {summary.GateRejected}</span>"
+            + $"<span class=\"stat\">Readings unavailable {summary.ReadingsUnavailable}</span>"
             + $"<span class=\"stat\">Mtime fallback {summary.MtimeFallback}</span>");
         var methods = string.Join(", ", summary.MethodCounts.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key} {kv.Value}"));
         sb.Append($"<div>Methods: {WebUtility.HtmlEncode(methods)}</div>");
-        if (summary.Growth is { } g)
-        {
-            sb.Append(
-                $"<div>Final growth: {g.CurrentHeightPx:F1}px ({g.GrowthFactor:F2}x), rate {g.RiseRatePxPerHour:F1}px/h, "
-                + $"trend {g.Trend}, phase {g.Phase}"
-                + (g.PredictedPeakTime is { } pt
-                    ? $", predicted peak {pt:yyyy-MM-dd HH:mm} ({g.PredictedPeakHeightPx:F1}px)"
-                    : "") + "</div>");
-        }
         if (summary.LastRiseReading is { } r)
         {
             sb.Append(
@@ -188,26 +180,27 @@ public static class ReplayReportWriter
     private static string BuildAnomalyTable(IReadOnlyList<ReplayFrameRow> rows)
     {
         var anomalies = rows
-            .Where(r => r.Outcome != "detected" || r.Gate == "rejected" || r.NewSession)
+            .Where(r => r.Outcome != "detected" || r.Reading == "unavailable" || r.NewSession)
             .ToList();
         if (anomalies.Count == 0) return "<p>None — every frame detected cleanly.</p>";
         var sb = new StringBuilder();
-        sb.Append("<table><tr><th>Time</th><th>Outcome</th><th>Method</th><th>Median</th><th>Contrast</th>"
-            + "<th>BandTop</th><th>Final</th><th>Dough h</th><th>Gate</th><th>NewSession</th><th>Debug</th></tr>");
+        sb.Append("<table><tr><th>Time</th><th>Outcome</th><th>Method</th><th>P90</th><th>Contrast</th>"
+            + "<th>BandTop</th><th>Final</th><th>Dough h</th><th>Reading</th><th>NewSession</th><th>Debug</th></tr>");
         foreach (var r in anomalies)
         {
             var css = r.Outcome == "dark_frame" ? "dark"
                 : r.Outcome == "detected" ? "detected"
                 : r.Outcome is "no_surface" or "decode_failed" or "no_jar" ? r.Outcome == "decode_failed" ? "failed" : "no-surface"
+                : r.Reading == "unavailable" ? "rejected"
                 : "";
             sb.Append(
                 $"<tr class=\"{css}\"><td>{r.Time:yyyy-MM-dd HH:mm:ss}</td>"
                 + $"<td class=\"outcome\">{WebUtility.HtmlEncode(r.Outcome)}</td>"
                 + $"<td>{WebUtility.HtmlEncode(r.Method ?? "")}</td>"
-                + $"<td>{F1(r.FrameMedian)}</td><td>{F1(r.BandContrast)}</td>"
+                + $"<td>{F1(r.FrameP90)}</td><td>{F1(r.BandContrast)}</td>"
                 + $"<td>{r.BandTopRow?.ToString() ?? ""}</td><td>{r.FinalRow?.ToString() ?? ""}</td>"
                 + $"<td>{F1(r.DoughHeightPx)}</td>"
-                + $"<td class=\"gate\">{WebUtility.HtmlEncode(r.Gate)}</td>"
+                + $"<td class=\"gate\">{WebUtility.HtmlEncode(r.Reading)}</td>"
                 + $"<td>{(r.NewSession ? "yes" : "")}</td>"
                 + $"<td>{(r.DebugImage is null ? "" : "img")}</td></tr>");
         }

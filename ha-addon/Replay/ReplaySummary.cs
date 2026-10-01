@@ -12,11 +12,10 @@ public sealed record ReplaySummary(
     int DarkFrames,
     int NoSurface,
     int DecodeFailed,
-    int GateRejected,
+    int ReadingsUnavailable,
     int MtimeFallback,
     DateTimeOffset FirstTime,
     DateTimeOffset LastTime,
     Dictionary<string, int> MethodCounts,
-    GrowthAnalysis? Growth,
     RiseReading? LastRiseReading,
     List<string> Warnings);

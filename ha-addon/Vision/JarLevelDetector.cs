@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 using OpenCvSharp;
 
 using SourdoughMonitor.Analysis;
@@ -13,8 +15,14 @@ namespace SourdoughMonitor.Vision;
 public sealed class JarLevelDetector(VisionOptions options)
 {
     /// <summary>Minimum mean-gray-level contrast between the region directly above a dark band
-    /// and the band interior for the band to be trusted over the edge-energy method.</summary>
-    private const double MinStepContrast = 15.0;
+    /// and the band interior for the band to be trusted over the edge-energy method. Without
+    /// backlighting, the strongest bright/dark step in the column is often the jar's own base
+    /// (glass foot, table-contact shadow) rather than the actual dough surface, and it can still
+    /// score noticeably above a low threshold (observed: 50 on a real ambient-lit jar, versus the
+    /// "massive" step a true backlit dough band produces). Raised well above that observed false
+    /// positive so such frames fall back to the edge-energy method instead of confidently
+    /// reporting the jar's base as the dough surface.</summary>
+    private const double MinStepContrast = 55.0;
 
     public DetectionDiagnostics? LastDiagnostics { get; private set; }
 
@@ -30,7 +38,11 @@ public sealed class JarLevelDetector(VisionOptions options)
 
     private sealed record JarColumn(int Left, int Right, int Top, int Bottom);
 
-    public LevelMeasurement? Measure(byte[] jpegBytes, DateTimeOffset now)
+    /// <summary>Measures the dough level. <paramref name="sessionBaselineHeightPx"/>, when
+    /// supplied, is the dough height (JarBottomPx - DoughTopPx) recorded at the start of the
+    /// current tracked session; it is drawn on the debug image as a reference line so the
+    /// starting point stays visible even as the dough rises.</summary>
+    public LevelMeasurement? Measure(byte[] jpegBytes, DateTimeOffset now, double? sessionBaselineHeightPx = null)
     {
         using var raw = Cv2.ImDecode(jpegBytes, ImreadModes.Grayscale);
         if (raw.Empty())
@@ -54,7 +66,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             LastOutcome = "dark_frame";
             LastDiagnostics = WithFrameStats(new DetectionDiagnostics("dark", 0, null, null), frameStats);
             if (options.DebugSaveAnnotatedImages)
-                SaveDebugImage(img, null, null, now);
+                SaveDebugImage(img, null, null, null, null, now);
             return null;
         }
         using var blurred = new Mat();
@@ -65,7 +77,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             using var edges = AutoCanny(blurred, medianIntensity, relaxation);
             var jarColumn = FindJarColumn(edges, img.Width, img.Height, relaxation);
             if (jarColumn is null) continue;
-            var measurement = MeasureWithinColumn(edges, img, jarColumn, now, frameStats);
+            var measurement = MeasureWithinColumn(edges, img, jarColumn, now, frameStats, sessionBaselineHeightPx);
             if (measurement is not null)
             {
                 LastOutcome = "detected";
@@ -78,7 +90,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         {
             using var edges = AutoCanny(blurred, medianIntensity, relaxation);
             var fallbackColumn = BuildFallbackColumn(img);
-            var measurement = MeasureWithinColumn(edges, img, fallbackColumn, now, frameStats);
+            var measurement = MeasureWithinColumn(edges, img, fallbackColumn, now, frameStats, sessionBaselineHeightPx);
             if (measurement is not null)
             {
                 LastOutcome = "detected";
@@ -88,7 +100,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         LastOutcome = "no_surface";
         LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
         if (options.DebugSaveAnnotatedImages)
-            SaveDebugImage(img, null, null, now);
+            SaveDebugImage(img, null, null, null, null, now);
         return null;
     }
 
@@ -97,7 +109,8 @@ public sealed class JarLevelDetector(VisionOptions options)
         Mat gray,
         JarColumn jarColumn,
         DateTimeOffset now,
-        (double? Mean, double? Median, double? P10, double? P90) frameStats)
+        (double? Mean, double? Median, double? P10, double? P90) frameStats,
+        double? sessionBaselineHeightPx)
     {
         var inset = Math.Max(3, (jarColumn.Right - jarColumn.Left) / 10);
         var rect = new Rect(
@@ -115,11 +128,22 @@ public sealed class JarLevelDetector(VisionOptions options)
         var doughTop = FindDoughSurface(columnEdges, columnGray, frameStats);
         if (doughTop is null)
         {
-            SaveDebugImage(gray, jarColumn, null, now);
+            SaveDebugImage(gray, jarColumn, null, null, null, now);
             return null;
         }
         var jarBottom = FindJarBottom(columnEdges, columnGray, doughTop.Value, rect.Height - 1);
-        SaveDebugImage(gray, jarColumn, jarColumn.Top + doughTop.Value, now);
+        // The jar's physical bottom doesn't move between frames, so the session-start dough
+        // surface can be re-derived in this frame's coordinates from this frame's jar bottom.
+        var sessionStartSurfaceY = sessionBaselineHeightPx is not null
+            ? (int?)Math.Round(jarColumn.Top + jarBottom - sessionBaselineHeightPx.Value)
+            : null;
+        SaveDebugImage(
+            gray,
+            jarColumn,
+            jarColumn.Top + doughTop.Value,
+            jarColumn.Top + jarBottom,
+            sessionStartSurfaceY,
+            now);
         return new LevelMeasurement(now, jarColumn.Top + doughTop.Value, jarColumn.Top, jarColumn.Top + jarBottom);
     }
 
@@ -226,11 +250,19 @@ public sealed class JarLevelDetector(VisionOptions options)
         return new JarColumn(wl.X, wr.X, Math.Min(wl.Top, wr.Top), Math.Max(wl.Bottom, wr.Bottom));
     }
 
+    private static readonly Scalar SessionStartLineColor = new(0, 255, 255); // yellow (BGR)
+
     /// <summary>Path of the debug image written for the most recent Measure call, or null
     /// when disk persistence is off (annotated bytes only) or the frame failed to decode.</summary>
     public string? LastDebugImagePath { get; private set; }
 
-    private void SaveDebugImage(Mat image, JarColumn? jarColumn, int? doughSurfaceY, DateTimeOffset now)
+    private void SaveDebugImage(
+        Mat image,
+        JarColumn? jarColumn,
+        int? doughSurfaceY,
+        int? jarBottomY,
+        int? sessionStartSurfaceY,
+        DateTimeOffset now)
     {
         LastDebugImagePath = null;
         using var color = new Mat();
@@ -257,21 +289,99 @@ public sealed class JarLevelDetector(VisionOptions options)
                 new Point(color.Width, doughSurfaceY.Value),
                 Scalar.Red,
                 2);
+        if (sessionStartSurfaceY is not null)
+        {
+            var y = Math.Clamp(sessionStartSurfaceY.Value, 0, color.Height - 1);
+            Cv2.Line(color, new Point(0, y), new Point(color.Width, y), SessionStartLineColor, 1, LineTypes.Link8);
+            Cv2.PutText(
+                color,
+                "session start",
+                new Point(4, Math.Clamp(y - 6, 10, color.Height - 4)),
+                HersheyFonts.HersheySimplex,
+                0.4,
+                SessionStartLineColor,
+                1);
+        }
         Cv2.ImEncode(".jpg", color, out var bytes);
         LatestAnnotatedImageBytes = bytes;
-        if (options.DebugSaveAnnotatedImages)
+        if (!options.DebugSaveAnnotatedImages) return;
+        var directory = ResolveDebugDirectory();
+        Directory.CreateDirectory(directory);
+        var filePath = Path.Combine(directory, $"{now:yyyyMMdd_HHmmssfff}.jpg");
+        // Timestamps from file-mtime fallbacks can collide (same second or FAT mtime
+        // granularity); never overwrite a sibling debug image.
+        for (var index = 1; File.Exists(filePath); index++)
         {
-            var directory = Path.Combine(AppContext.BaseDirectory, options.DebugOutputDirectory);
-            Directory.CreateDirectory(directory);
-            var filePath = Path.Combine(directory, $"{now:yyyyMMdd_HHmmssfff}.jpg");
-            // Timestamps from file-mtime fallbacks can collide (same second or FAT mtime
-            // granularity); never overwrite a sibling debug image.
-            for (var index = 1; File.Exists(filePath); index++)
+            filePath = Path.Combine(directory, $"{now:yyyyMMdd_HHmmssfff}_{index}.jpg");
+        }
+        Cv2.ImWrite(filePath, color);
+        LastDebugImagePath = filePath;
+        AppendDiagnosticsLogEntry(directory, Path.GetFileName(filePath), jarColumn, doughSurfaceY, jarBottomY, sessionStartSurfaceY, now);
+        PruneOldDebugFiles(directory, now);
+    }
+
+    private string ResolveDebugDirectory() =>
+        Path.IsPathFullyQualified(options.DebugOutputDirectory)
+            ? options.DebugOutputDirectory
+            : Path.Combine(AppContext.BaseDirectory, options.DebugOutputDirectory);
+
+    /// <summary>Appends one JSON line per frame to a daily-rotated sidecar log next to the
+    /// annotated images, so an exported debug folder carries the raw numbers (detection
+    /// method, band contrast, pixel positions) alongside what the images show, instead of
+    /// requiring MQTT debug mode to have been captured separately.</summary>
+    private void AppendDiagnosticsLogEntry(
+        string directory,
+        string imageFileName,
+        JarColumn? jarColumn,
+        int? doughSurfaceY,
+        int? jarBottomY,
+        int? sessionStartSurfaceY,
+        DateTimeOffset now)
+    {
+        var entry = new
+        {
+            time = now.ToString("O"),
+            image = imageFileName,
+            method = LastDiagnostics?.Method,
+            band_contrast = LastDiagnostics?.BandContrast,
+            band_top_row = LastDiagnostics?.BandTopRow,
+            final_row = LastDiagnostics?.FinalRow,
+            jar_left_px = jarColumn?.Left,
+            jar_right_px = jarColumn?.Right,
+            jar_top_px = jarColumn?.Top,
+            dough_top_px = doughSurfaceY,
+            jar_bottom_px = jarBottomY,
+            session_start_surface_px = sessionStartSurfaceY
+        };
+        var logPath = Path.Combine(directory, $"diagnostics-{now:yyyyMMdd}.jsonl");
+        File.AppendAllText(logPath, JsonSerializer.Serialize(entry) + Environment.NewLine);
+    }
+
+    /// <summary>Deletes debug images and diagnostics log files older than
+    /// <see cref="VisionOptions.DebugRetentionHours"/> so the export folder stays a bounded,
+    /// recent-only rolling window instead of accumulating one file per sample forever.</summary>
+    private void PruneOldDebugFiles(string directory, DateTimeOffset now)
+    {
+        var cutoff = now.UtcDateTime - TimeSpan.FromHours(options.DebugRetentionHours);
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(directory))
             {
-                filePath = Path.Combine(directory, $"{now:yyyyMMdd_HHmmssfff}_{index}.jpg");
+                if (File.GetLastWriteTimeUtc(file) >= cutoff) continue;
+                try
+                {
+                    File.Delete(file);
+                }
+                catch (IOException)
+                {
+                    // Best-effort cleanup; a file locked by a concurrent reader (e.g. the
+                    // user copying it out) can simply be retried on the next cycle.
+                }
             }
-            Cv2.ImWrite(filePath, color);
-            LastDebugImagePath = filePath;
+        }
+        catch (IOException)
+        {
+
         }
     }
 
@@ -287,7 +397,13 @@ public sealed class JarLevelDetector(VisionOptions options)
         var stripX = columnGray.Width / 4;
         var stripWidth = Math.Max(1, columnGray.Width / 2);
         using var centralStrip = columnGray[new Rect(stripX, 0, stripWidth, columnGray.Height)];
-        var rowIntensity = ReduceRows(centralStrip, average: true);
+        // Row median rather than row mean: IR illumination commonly puts a narrow, very
+        // bright specular hot spot or condensation glare through the center of the jar. A
+        // mean pulls the whole row toward that hot spot even though it covers only a
+        // fraction of the row's width, dragging the detected band boundary up into the
+        // glare instead of down to the real dough surface. The median ignores it as long as
+        // it covers less than half the strip width, which it reliably does.
+        var rowIntensity = ReduceRowsMedian(centralStrip);
         var result = FindDoughSurfaceCombined(rowEnergy, rowIntensity, out var diagnostics);
         LastDiagnostics = WithFrameStats(diagnostics ?? new DetectionDiagnostics("none", 0, null, null), frameStats);
         return result;
@@ -343,7 +459,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         return horizontals.Length > 0 ? horizontals[0].Y : null;
     }
 
-    private static float[] ReduceRows(Mat column, bool average = false)
+    private static float[] ReduceRows(Mat column)
     {
         var values = new float[column.Rows];
         using var reduced = new Mat();
@@ -351,10 +467,30 @@ public sealed class JarLevelDetector(VisionOptions options)
             column,
             reduced,
             ReduceDimension.Column,
-            average ? ReduceTypes.Avg : ReduceTypes.Sum,
+            ReduceTypes.Sum,
             MatType.CV_32F);
         reduced.GetArray(out values);
         return values;
+    }
+
+    /// <summary>Per-row median intensity of an 8-bit grayscale Mat. Unlike a mean, a single
+    /// bright or dark outlier patch within a row (glare, a condensation droplet) cannot shift
+    /// the result as long as it covers less than half the row's width.</summary>
+    private static float[] ReduceRowsMedian(Mat column)
+    {
+        var rows = column.Rows;
+        var cols = column.Cols;
+        var result = new float[rows];
+        var buffer = new byte[cols];
+        var mid = cols / 2;
+        for (var y = 0; y < rows; y++)
+        {
+            for (var x = 0; x < cols; x++)
+                buffer[x] = column.Get<byte>(y, x);
+            Array.Sort(buffer);
+            result[y] = cols % 2 == 0 ? (buffer[mid - 1] + buffer[mid]) / 2f : buffer[mid];
+        }
+        return result;
     }
 
     public static LevelMeasurement AdjustMeasurementForRoi(LevelMeasurement measurement, int roiY)

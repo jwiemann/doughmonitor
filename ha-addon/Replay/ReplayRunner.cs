@@ -11,9 +11,9 @@ using SourdoughMonitor.Vision;
 namespace SourdoughMonitor.Replay;
 
 /// <summary>Offline batch analysis of a folder of exported camera snapshots.
-/// Replays every frame through the live detector, persists per-frame measurements,
-/// diagnostics and annotated debug images, and reports the peak prediction derived
-/// from the rising rate over the whole span.
+/// Replays every frame through the live detector and analyzer (the same code path as the
+/// add-on's sampling cycle), persists per-frame measurements, diagnostics and annotated
+/// debug images, and reports the peak prediction derived from the rising rate.
 /// Usage: dotnet run -- replay &lt;folder&gt; [--out dir] [--config path] [--roi x,y,w,h]</summary>
 public static class ReplayRunner
 {
@@ -72,8 +72,6 @@ public static class ReplayRunner
         Console.WriteLine($"Output: {Path.GetFullPath(outPath)}");
 
         var detector = new JarLevelDetector(visionOptions);
-        var growthTracker = new GrowthTracker(
-            new GrowthOptions { HistoryRetention = TimeSpan.FromDays(60) });
         var riseAnalyzer = new RiseAnalyzer(BuildReplayAnalysisOptions(options.Analysis));
 
         var rows = new List<ReplayFrameRow>(frames.Count);
@@ -90,47 +88,20 @@ public static class ReplayRunner
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 warnings.Add($"Unreadable file: {frame.Path} ({ex.Message})");
-                rows.Add(new ReplayFrameRow(
-                    File: frame.Path,
-                    Time: frame.Time,
-                    TimeSource: frame.FromFilename ? "filename" : "mtime",
-                    Outcome: "decode_failed",
-                    Method: null,
-                    FrameMean: null,
-                    FrameMedian: null,
-                    FrameP10: null,
-                    FrameP90: null,
-                    BandContrast: null,
-                    BandTopRow: null,
-                    FinalRow: null,
-                    DoughTopPx: null,
-                    JarTopPx: null,
-                    JarBottomPx: null,
-                    DoughHeightPx: null,
-                    SmoothedHeightPx: null,
-                    Gate: "",
-                    RisePercent: null,
-                    RiseRatePctPerHour: null,
-                    PredictedPeakPercent: null,
-                    PredictedPeakTime: null,
-                    Peaked: false,
-                    NewSession: false,
-                    DebugImage: null));
+                rows.Add(DecodeFailedRow(frame));
                 continue;
             }
-            var measurement = detector.Measure(bytes, frame.Time);
+            // Session baseline mirrors the live Worker: the analyzer's baseline as it stood
+            // before this frame, so debug images draw the session-start line like the addon.
+            var measurement = detector.Measure(bytes, frame.Time, riseAnalyzer.BaselineDoughHeightPx);
             var diagnostics = detector.LastDiagnostics;
             var debugImage = detector.LastDebugImagePath is { } path
                 ? Path.GetRelativePath(Path.GetFullPath(outPath), path)
                 : null;
-            var gate = "";
-            double? smoothed = null;
-            if (measurement is not null)
+            var reading = measurement is null ? null : riseAnalyzer.Analyze(measurement);
+            if (reading is not null)
             {
-                var sample = growthTracker.Add(measurement);
-                gate = sample is null ? "rejected" : "accepted";
-                smoothed = sample?.HeightPx;
-                lastReading = riseAnalyzer.Analyze(measurement);
+                lastReading = reading;
             }
             rows.Add(new ReplayFrameRow(
                 File: frame.Path,
@@ -149,18 +120,16 @@ public static class ReplayRunner
                 JarTopPx: measurement?.JarTopPx,
                 JarBottomPx: measurement?.JarBottomPx,
                 DoughHeightPx: measurement?.DoughHeightPx,
-                SmoothedHeightPx: smoothed,
-                Gate: gate,
-                RisePercent: lastReading?.RisePercent,
-                RiseRatePctPerHour: lastReading?.RiseRatePercentPerHour,
-                PredictedPeakPercent: lastReading?.PredictedPeakPercent,
-                PredictedPeakTime: lastReading?.PredictedPeakTime,
-                Peaked: lastReading?.Peaked ?? false,
-                NewSession: lastReading?.NewSession ?? false,
+                Reading: measurement is null ? "" : reading is null ? "unavailable" : "ok",
+                RisePercent: reading?.RisePercent,
+                RiseRatePctPerHour: reading?.RiseRatePercentPerHour,
+                PredictedPeakPercent: reading?.PredictedPeakPercent,
+                PredictedPeakTime: reading?.PredictedPeakTime,
+                Peaked: reading?.Peaked ?? false,
+                NewSession: reading?.NewSession ?? false,
                 DebugImage: debugImage));
         }
 
-        var growth = growthTracker.Analyze();
         var methodCounts = rows
             .Where(r => r.Method is not null)
             .GroupBy(r => r.Method!)
@@ -174,12 +143,11 @@ public static class ReplayRunner
             rows.Count(r => r.Outcome == "dark_frame"),
             rows.Count(r => r.Outcome is "no_surface" or "no_jar"),
             rows.Count(r => r.Outcome == "decode_failed"),
-            rows.Count(r => r.Gate == "rejected"),
+            rows.Count(r => r.Reading == "unavailable"),
             mtimeFallback,
             rows[0].Time,
             rows[^1].Time,
             methodCounts,
-            growth,
             lastReading,
             warnings);
 
@@ -192,6 +160,32 @@ public static class ReplayRunner
         PrintSummary(summary);
         return 0;
     }
+
+    private static ReplayFrameRow DecodeFailedRow(Frame frame) => new(
+        File: frame.Path,
+        Time: frame.Time,
+        TimeSource: frame.FromFilename ? "filename" : "mtime",
+        Outcome: "decode_failed",
+        Method: null,
+        FrameMean: null,
+        FrameMedian: null,
+        FrameP10: null,
+        FrameP90: null,
+        BandContrast: null,
+        BandTopRow: null,
+        FinalRow: null,
+        DoughTopPx: null,
+        JarTopPx: null,
+        JarBottomPx: null,
+        DoughHeightPx: null,
+        Reading: "",
+        RisePercent: null,
+        RiseRatePctPerHour: null,
+        PredictedPeakPercent: null,
+        PredictedPeakTime: null,
+        Peaked: false,
+        NewSession: false,
+        DebugImage: null);
 
     private static List<Frame> CollectFrames(string folder)
     {
@@ -220,7 +214,7 @@ public static class ReplayRunner
         sb.AppendLine(
             "file,time,time_source,outcome,method,frame_mean,frame_median,frame_p10,frame_p90,band_contrast,"
             + "band_top_row,final_row,dough_top_px,jar_top_px,jar_bottom_px,dough_height_px,"
-            + "smoothed_height_px,gate,rise_percent,rise_rate_pct_per_h,predicted_peak_percent,"
+            + "reading,rise_percent,rise_rate_pct_per_h,predicted_peak_percent,"
             + "predicted_peak_time,peaked,new_session,debug_image");
         foreach (var r in rows)
         {
@@ -242,8 +236,7 @@ public static class ReplayRunner
                 N(r.JarTopPx),
                 N(r.JarBottomPx),
                 N(r.DoughHeightPx),
-                N(r.SmoothedHeightPx),
-                r.Gate,
+                r.Reading,
                 N(r.RisePercent),
                 N(r.RiseRatePctPerHour),
                 N(r.PredictedPeakPercent),
@@ -261,19 +254,10 @@ public static class ReplayRunner
         Console.WriteLine($"Frames: {s.FrameCount} over {s.LastTime - s.FirstTime}");
         Console.WriteLine(
             $"  detected {s.Detected} | dark {s.DarkFrames} | no_surface {s.NoSurface} "
-            + $"| decode_failed {s.DecodeFailed} | gate rejected {s.GateRejected} | mtime fallback {s.MtimeFallback}");
+            + $"| decode_failed {s.DecodeFailed} | readings unavailable {s.ReadingsUnavailable} "
+            + $"| mtime fallback {s.MtimeFallback}");
         Console.WriteLine(
             $"  methods: {string.Join(", ", s.MethodCounts.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key} {kv.Value}"))}");
-        if (s.Growth is { } g)
-        {
-            Console.WriteLine(
-                $"Growth: height {g.CurrentHeightPx:F1}px, factor {g.GrowthFactor:F2}x, "
-                + $"rate {g.RiseRatePxPerHour:F1}px/h, trend {g.Trend}, phase {g.Phase}");
-            if (g.PredictedPeakTime is not null)
-            {
-                Console.WriteLine($"Peak prediction: {g.PredictedPeakTime:yyyy-MM-dd HH:mm} (height {g.PredictedPeakHeightPx:F1}px)");
-            }
-        }
         if (s.LastRiseReading is { } r)
         {
             Console.WriteLine(
@@ -362,6 +346,7 @@ public static class ReplayRunner
             MinJarWallFraction = src.MinJarWallFraction,
             MinJarWidthFraction = src.MinJarWidthFraction,
             MinFrameIntensity = src.MinFrameIntensity,
+            MinFrameContrast = src.MinFrameContrast,
             DebugSaveAnnotatedImages = true,
             DebugOutputDirectory = debugDir
         };
@@ -375,6 +360,14 @@ public static class ReplayRunner
         MaxEtaRelativeStdError = src.MaxEtaRelativeStdError,
         PeakConfirmWindows = src.PeakConfirmWindows,
         MaxSessionHours = src.MaxSessionHours,
+        MedianWindowSize = src.MedianWindowSize,
+        PeakFraction = src.PeakFraction,
+        FlatSlopePercentPerHour = src.FlatSlopePercentPerHour,
+        MinRisePercentForPeak = src.MinRisePercentForPeak,
+        MaxRisePxPerMinute = src.MaxRisePxPerMinute,
+        JitterTolerancePx = src.JitterTolerancePx,
+        MaxImplausibleJumpRejects = src.MaxImplausibleJumpRejects,
+        CollapseConfirmSamples = src.CollapseConfirmSamples,
         // Replay must never touch the live addon session state file.
         StateFilePath = null
     };
