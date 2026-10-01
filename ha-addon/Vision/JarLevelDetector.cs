@@ -1074,16 +1074,14 @@ public sealed class JarLevelDetector(VisionOptions options)
         // top: dough whose upper layer is dark-but-not-warm (wet, freshly fed) makes the
         // warm median run begin inside the dough — observed live (warm 576 vs dark 477).
         var warmTrusted = warmTop is not null
-            && MeanCoverage(warmCoverage, warmTop.Value, longRun) >= frontEdgeCoverageFraction
             && (bandTop is null || warmTop.Value <= bandTop.Value + Math.Max(10, rowEnergy.Count * 2 / 100));
         if (warmTrusted)
         {
-            // The median-based top is the jar's BACK edge (appears higher through the
-            // cylindrical glass); refine down to the front edge. The dark coverage is the
-            // universal front-edge signal — the dough is darker than the glass in every
-            // state (tan, pale, backlit). No crossing on this frame: fall through to the
-            // band path instead of reporting the back edge.
-            var warmFront = RefineToFrontEdge(darkCoverage, warmTop.Value, longRun, frontEdgeCoverageFraction);
+            // The color signal defines the surface: the first row reaching 60% of the
+            // warm-coverage plateau (the saturated, teig-artiger body). The dark layer
+            // above it (wet, shadowed) is not dough-colored, so the DARK front edge would
+            // sit too high. No sustained crossing: fall through to the band path.
+            var warmFront = FrontEdgeByWarmCoverage(warmCoverage, longRun);
             if (warmFront is not null)
             {
                 var snapped = SnapToEdge(rowEnergy, warmFront.Value);
@@ -1113,6 +1111,38 @@ public sealed class JarLevelDetector(VisionOptions options)
             bandTop,
             edgeSupported ? edgeRow : null);
         return edgeSupported ? edgeRow : null;
+    }
+
+    /// <summary>Front edge from the warm-coverage profile: the first row (scanning from the
+    /// top) reaching 60% of the warm plateau (the saturated dough body's coverage), held
+    /// for the dough-body length (dips tolerated to 35% of the plateau — bubbles, frost
+    /// patches). A thin warm glare line fails the hold rule; a shadowed wall has no warm
+    /// signal at all. Returns null when the frame has no colored dough body (plateau
+    /// below 50% — pale fresh feed), letting the dark-band path take over.</summary>
+    private static int? FrontEdgeByWarmCoverage(float[]? coverage, int longRun)
+    {
+        if (coverage is null || coverage.Length == 0) return null;
+        var n = coverage.Length;
+        var searchStart = Math.Min(n - 1, (int)(n * 0.05));
+        var plateau = 0f;
+        for (var y = searchStart; y < n; y++)
+        {
+            if (coverage[y] > plateau) plateau = coverage[y];
+        }
+        if (plateau < 0.5f) return null;
+        var threshold = 0.6 * plateau;
+        var continuation = 0.35 * plateau;
+        for (var y = searchStart; y < n; y++)
+        {
+            if (coverage[y] < threshold) continue;
+            var sustained = true;
+            for (var k = 1; k < longRun && y + k < n; k++)
+            {
+                if (coverage[y + k] < continuation) { sustained = false; break; }
+            }
+            if (sustained) return y;
+        }
+        return null;
     }
 
     /// <summary>Mean coverage over [start .. start+length) (clamped to the profile). A warm

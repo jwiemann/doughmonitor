@@ -357,6 +357,9 @@ public static class ReplayRunner
             MinFrameContrast = src.MinFrameContrast,
             DebugSaveAnnotatedImages = true,
             DebugOutputDirectory = debugDir,
+            // Replay is the tuning tool: always show the color filter's dough mask so the
+            // surface line can be checked against it visually.
+            DebugHighlightDough = true,
             // Replay must never touch the live addon's persisted jar geometry.
             GeometryStateFilePath = null
         };

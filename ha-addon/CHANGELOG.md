@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.43
+
+- Surface line sits at the saturated dough boundary (60% of the warm-coverage plateau)
+  instead of the darker wet/shadow layer above it — the dark layer is not dough-colored.
+
 ## 0.1.42
 
 - Surface line no longer jumps to the condensation line above the dough: the edge
