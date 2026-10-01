@@ -88,6 +88,12 @@ public sealed class VisionOptions
 
     public bool DebugSaveAnnotatedImages { get; init; } = true;
 
+    /// <summary>Paints the color filter's dough mask (warm tone) translucently into the
+    /// debug image. Off by default: the overlay makes it hard to tell shadows from actual
+    /// dough when inspecting the raw scene. Turn on in the add-on options
+    /// (`debug_highlight_dough`) when tuning the detection.</summary>
+    public bool DebugHighlightDough { get; init; }
+
     /// <summary>Where annotated debug images and the per-frame diagnostics log are written.
     /// Defaults to the Home Assistant add-on's <c>/share</c> mount (requires
     /// <c>map: - share:rw</c> in config.yaml) so the files are reachable via Samba/File

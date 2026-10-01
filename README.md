@@ -90,6 +90,26 @@ Frames are timestamped from their file names (addon archive, Frigate/HA exports 
 camera names like `IMG_2026-09-28_12-00-00.jpg` all parse); files without a parseable name
 fall back to modification time and are flagged in the CSV.
 
+## Camera load & live stream
+
+Every sampling cycle fetches one snapshot. Connection reuse is built in (pooled HTTP
+client), retries are limited to failed fetches (default 1 extra attempt), and detection
+misses are simply re-sampled by the next cycle — so the load on the camera is one request
+per interval, nothing more.
+
+If the **live stream in the dashboard breaks** while the add-on runs, the bottleneck is
+usually CPU on the box hosting Frigate (a Raspberry Pi serving stream, motion detection
+and snapshots at once). Remedies, in order of effect:
+
+1. Fetch snapshots **directly from Frigate** instead of the HA camera-proxy hop: set
+   `frigate_base_url` to `http://<frigate-host>:5000` (leave `frigate_snapshot_url`
+   empty). Frigate serves `latest.jpg` from memory — no HA round trip.
+2. Lower `frigate_snapshot_quality` (75) / `frigate_snapshot_height` (720): a smaller
+   JPEG costs much less encode CPU per request, and the detection works fine on smaller
+   frames (all thresholds are relative).
+3. Raise `frigate_sample_interval_minutes` (e.g. 5) — fewer requests per hour.
+4. Keep the retry count low (`Frigate:SnapshotRetryCount`, default 1).
+
 ## Dark-frame gate
 
 Frames whose 90th-percentile intensity is below `Vision:MinFrameIntensity` (default 25) or

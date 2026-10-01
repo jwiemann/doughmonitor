@@ -81,7 +81,7 @@ public sealed class FrigateSnapshotClient(HttpClient http, FrigateOptions option
         if (!string.IsNullOrWhiteSpace(options.BaseUrl))
         {
             var baseUrl = options.BaseUrl.TrimEnd('/');
-            return $"{baseUrl}/api/{options.Camera}/latest.jpg?quality=90&height=1080&width=1920";
+            return $"{baseUrl}/api/{options.Camera}/latest.jpg?quality={options.SnapshotQuality}&height={options.SnapshotHeight}";
         }
         throw new InvalidOperationException(
             "No snapshot URL configured. Set SUPERVISOR_TOKEN for addon mode, "

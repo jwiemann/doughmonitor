@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.41
+
+- Reduce camera load: snapshot retries only apply to failed FETCHES (detection misses are
+  re-sampled by the next cycle instead of re-fetching — each re-fetch wakes battery
+  cameras, and constant polling is what breaks their live stream), and the retry default
+  drops from 2 to 1. The HTTP connection is already pooled/keep-alive.
+- The dough-highlight overlay in the debug image is now OFF by default and controlled by
+  the new add-on option `debug_highlight_dough` (default off): the translucent orange
+  dough mask made it hard to tell shadows from actual dough in the raw scene.
+- Jar column warm-first: the color signal defines the jar interior whenever a warm run
+  wide enough for the jar exists — the column's right edge no longer bridges onto the
+  shadowed wall/rack (observed drifting to the door frame at 1203 while the dough ends at
+  ~800). The dark signal only fills in while the dough is too pale for the color filter
+  (fresh feed).
+- Front-edge refinement unified: both detection methods refine the back-edge band top to
+  the front edge via the DARK coverage (the dough is darker than the glass in every state
+  — tan, pale, backlit), ending the warm/band reading disagreement of ~60-80 px.
+
+## 0.1.40
+
+- The dough-highlight overlay in the debug image is now OFF by default and controlled by
+  the new add-on option `debug_highlight_dough` (default off): the translucent orange
+  dough mask made it hard to tell shadows from actual dough in the raw scene.
+- Jar column warm-first: the color signal defines the jar interior whenever a warm run
+  wide enough for the jar exists — the column's right edge no longer bridges onto the
+  shadowed wall/rack (observed drifting to the door frame at 1203 while the dough ends at
+  ~800). The dark signal only fills in while the dough is too pale for the color filter
+  (fresh feed).
+
 ## 0.1.40
 
 - Debug image now shows the dough filters: orange overlay = where the color filter (warm

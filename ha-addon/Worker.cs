@@ -96,8 +96,10 @@ public sealed class Worker(
     }
 
     /// <summary>Fetches a snapshot and runs detection, retrying a few times within this
-    /// cycle on transient failure (bad frame, camera hiccup) so a single flaky attempt
-    /// doesn't drop a whole sampling interval's worth of data.</summary>
+    /// cycle on transient failure (camera hiccup) so a single flaky attempt doesn't drop a
+    /// whole sampling interval's worth of data. Retries apply ONLY to failed fetches: a
+    /// re-fetch wakes battery cameras again (their live stream is what breaks under
+    /// constant polling), and a detection miss is re-sampled by the next cycle anyway.</summary>
     private async Task<(byte[]? Jpeg, LevelMeasurement? Measurement)> CaptureWithRetriesAsync(CancellationToken ct)
     {
         // Read once per cycle: it reflects the session as it stood before this cycle's
@@ -108,23 +110,29 @@ public sealed class Worker(
         for (var attempt = 0; attempt <= options.Frigate.SnapshotRetryCount; attempt++)
         {
             jpeg = await frigate.GetLatestSnapshotAsync(ct);
-            if (jpeg is not null)
+            if (jpeg is null)
             {
-                measurement = detector.Measure(jpeg, DateTimeOffset.Now, sessionBaselineHeightPx);
-                if (measurement is not null && options.Vision.RoiY is not null)
+                if (attempt < options.Frigate.SnapshotRetryCount)
                 {
-                    measurement = JarLevelDetector.AdjustMeasurementForRoi(measurement, options.Vision.RoiY.Value);
+                    logger.LogWarning(
+                        "Snapshot fetch attempt {Attempt} failed; retrying in {Delay}s",
+                        attempt + 1,
+                        options.Frigate.SnapshotRetryDelaySeconds);
+                    await Task.Delay(TimeSpan.FromSeconds(options.Frigate.SnapshotRetryDelaySeconds), ct);
+                    continue;
                 }
-                if (measurement is not null) break;
+                break;
             }
-            if (attempt < options.Frigate.SnapshotRetryCount)
+            measurement = detector.Measure(jpeg, DateTimeOffset.Now, sessionBaselineHeightPx);
+            if (measurement is not null && options.Vision.RoiY is not null)
             {
-                logger.LogWarning(
-                    "Snapshot/detection attempt {Attempt} failed; retrying in {Delay}s",
-                    attempt + 1,
-                    options.Frigate.SnapshotRetryDelaySeconds);
-                await Task.Delay(TimeSpan.FromSeconds(options.Frigate.SnapshotRetryDelaySeconds), ct);
+                measurement = JarLevelDetector.AdjustMeasurementForRoi(measurement, options.Vision.RoiY.Value);
             }
+            if (measurement is null)
+            {
+                logger.LogInformation("Snapshot fetched but dough not detected; waiting for next cycle");
+            }
+            break;
         }
         return (jpeg, measurement);
     }
