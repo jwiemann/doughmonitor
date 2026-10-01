@@ -62,6 +62,17 @@ public sealed class VisionOptions
     /// brightness band method.</summary>
     public double MaxNeutralReferenceSaturation { get; init; } = 10.0;
 
+    /// <summary>Column-level warmth for the jar-extent detection: a zone row counts as warm
+    /// when its saturation exceeds the neutral top-quarter reference by this step.
+    /// Calibrated on real frames (6 separates glass from wall despite neutral white
+    /// reflection streaks on the glass flanks; 12 loses ~80px of jar on each side).</summary>
+    public double WarmColumnSaturationStep { get; init; } = 6.0;
+
+    /// <summary>Minimum fraction of warm zone rows for a column to count as jar interior.
+    /// Calibrated on real frames (0.55); the warm table strip below the jar stays far
+    /// below it.</summary>
+    public double WarmColumnMinFraction { get; init; } = 0.55;
+
     public bool DebugSaveAnnotatedImages { get; init; } = true;
 
     /// <summary>Where annotated debug images and the per-frame diagnostics log are written.

@@ -34,9 +34,29 @@ public sealed class JarLevelDetector(VisionOptions options)
     /// <summary>JPEG bytes of the most recently annotated debug image, or null if none yet.</summary>
     public byte[]? LatestAnnotatedImageBytes { get; private set; }
 
+    /// <summary>Recent warm-extent column bounds. The dough's visible extent flickers with
+    /// lighting (edges wash out; occasional warm structures beside the jar pollute). The
+    /// INTERSECTION over the last <see cref="WarmColumnHistorySize"/> frames (~1 h) is the
+    /// region that was dough in every recent frame: static drawn lines, a measurement
+    /// strip guaranteed inside the dough, immune to both washout and pollution, and
+    /// self-healing after a bumped camera once the polluted window ages out.</summary>
+    private readonly Queue<(int Left, int Right)> _recentWarmColumns = new();
+
+    private const int WarmColumnHistorySize = 60;
+
+    /// <summary>Consecutive frames whose fresh warm extent disagreed with the window
+    /// aggregate on both edges — three in a row mean the camera/scene moved and the
+    /// window must re-establish on the new scene instead of blending two scenes for an
+    /// hour.</summary>
+    private int _extentDisagreementStreak;
+
     private sealed record WallLine(int X, int Top, int Bottom);
 
-    private sealed record JarColumn(int Left, int Right, int Top, int Bottom);
+    /// <summary>How the jar column was established: "walls" (Hough-detected vertical glass
+    /// walls), "warm" (the dough's warm horizontal extent — those edges are the glass) or
+    /// "fallback" (full-frame minus border margin; drawn orange so unverified bounds stay
+    /// visually distinct from verified walls).</summary>
+    private sealed record JarColumn(int Left, int Right, int Top, int Bottom, string Kind);
 
     /// <summary>Measures the dough level. <paramref name="sessionBaselineHeightPx"/>, when
     /// supplied, is the dough height (JarBottomPx - DoughTopPx) recorded at the start of the
@@ -90,7 +110,33 @@ public sealed class JarLevelDetector(VisionOptions options)
                 return measurement;
             }
         }
-        // Pass 2: walls invisible (transparent container / box filling the frame)
+        // Pass 2: saturation-derived walls — the dough's warm horizontal extent marks the
+        // jar interior, so its edges ARE the glass walls. Robust where the glass has no
+        // Canny contrast (ambient light against a white wall). The returned bounds are the
+        // median over the recent window, so the drawn lines sit still.
+        {
+            using var edges = AutoCanny(blurred, medianIntensity, 1.0);
+            var warmColumn = FindJarColumnByWarmExtent(
+                imgColor,
+                img.Width,
+                img.Height,
+                options.WarmColumnSaturationStep,
+                options.WarmColumnMinFraction);
+            if (warmColumn is not null)
+            {
+                var measurement = MeasureWithinColumn(edges, img, imgColor, warmColumn, now, frameStats, sessionBaselineHeightPx);
+                if (measurement is not null)
+                {
+                    LastOutcome = "detected";
+                    return measurement;
+                }
+                // The held window no longer contains the dough (bumped camera): drop it so
+                // the next frame re-establishes on fresh extents.
+                _recentWarmColumns.Clear();
+                _extentDisagreementStreak = 0;
+            }
+        }
+        // Pass 3: walls invisible (transparent container / box filling the frame)
         // Use the full frame (minus a border margin) as the column.
         foreach (var relaxation in new[] { 1.0, 0.6 })
         {
@@ -161,7 +207,172 @@ public sealed class JarLevelDetector(VisionOptions options)
     {
         var marginX = Math.Max(3, img.Width / 20);
         var marginY = Math.Max(2, img.Height / 30);
-        return new JarColumn(marginX, img.Width - marginX, marginY, img.Height - marginY);
+        return new JarColumn(marginX, img.Width - marginX, marginY, img.Height - marginY, "fallback");
+    }
+
+    /// <summary>Derives the jar column from the dough's warm horizontal extent. A column
+    /// belongs to the jar when a large fraction of its zone rows (mid-frame to lower frame)
+    /// is warm-toned; the extreme warm columns are the glass walls. Outside the jar the
+    /// neutral wall dominates the zone (the warm table strip stays a minority and its rows
+    /// below the zone bottom are cut). All steps are native OpenCV ops, so this costs
+    /// per frame. Note <see cref="ReduceDimension.Row"/> semantics: reduce to a
+    /// single ROW = per-column statistic (verified against live data — the inverse choice
+    /// produced row indices masquerading as column bounds).</summary>
+    private JarColumn? FindJarColumnByWarmExtent(
+        Mat color,
+        int frameWidth,
+        int frameHeight,
+        double warmColumnSaturationStep,
+        double warmColumnMinFraction)
+    {
+        var zoneTop = (int)(frameHeight * 0.50);
+        var zoneBottom = Math.Min(frameHeight - 1, (int)(frameHeight * 0.92));
+        var neutralTop = Math.Max(1, (int)(frameHeight * 0.25));
+        if (zoneBottom - zoneTop < 10 || neutralTop >= zoneTop) return null;
+        using var saturation = SaturationMap(color);
+        if (saturation.Empty()) return null;
+
+        // Neutral reference: per-column mean over the top quarter (wall, door frame, empty
+        // glass — all neutral), then the median across columns. The jar's top region holds
+        // empty glass or is out of frame; both neutral.
+        using var topRows = saturation[new Rect(0, 0, frameWidth, neutralTop)];
+        using var topColMeans = new Mat();
+        Cv2.Reduce(topRows, topColMeans, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
+        if (!topColMeans.GetArray(out float[] topMeans) || topMeans.Length != frameWidth) return null;
+        var sortedTop = topMeans.OrderBy(v => v).ToArray();
+        var neutral = sortedTop.Length % 2 == 0
+            ? (sortedTop[sortedTop.Length / 2 - 1] + sortedTop[sortedTop.Length / 2]) / 2f
+            : sortedTop[sortedTop.Length / 2];
+
+        // Warm mask, then per-column warm fraction over the dough zone. The fraction rule
+        // is robust against the neutral white reflection streaks running down the glass
+        // flanks, which dilute a plain column mean below acceptance.
+        using var warmMask = new Mat();
+        Cv2.Threshold(saturation, warmMask, neutral + warmColumnSaturationStep, 255, ThresholdTypes.Binary);
+        using var zoneMask = warmMask[new Rect(0, zoneTop, frameWidth, zoneBottom - zoneTop + 1)];
+        using var zoneColMeans = new Mat();
+        Cv2.Reduce(zoneMask, zoneColMeans, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
+        if (!zoneColMeans.GetArray(out float[] zoneMeans) || zoneMeans.Length != frameWidth) return null;
+        var warmLine = warmColumnMinFraction * 255f;
+        var warm = zoneMeans.Select(v => v >= warmLine).ToArray();
+
+        // Suppress isolated warm columns (specular speckles): a column counts as warm when
+        // it has a warm neighbor on both sides near the frame edge, or any warm neighbor
+        // elsewhere.
+        var smoothed = new bool[warm.Length];
+        for (var x = 0; x < warm.Length; x++)
+        {
+            if (!warm[x]) continue;
+            var leftNeighbor = x > 0 && warm[x - 1];
+            var rightNeighbor = x < warm.Length - 1 && warm[x + 1];
+            var nearBorder = x < frameWidth * 0.06 || x > frameWidth * 0.94;
+            smoothed[x] = nearBorder ? leftNeighbor && rightNeighbor : leftNeighbor || rightNeighbor;
+        }
+        // Longest contiguous warm run, not leftmost/rightmost overall: warm-looking
+        // structures beside the jar (observed: a cream-colored metal rack right of the
+        // jar, sat far above the wall) are separated from the dough by a neutral wall
+        // gap, and taking the outermost warm columns would jump the extent onto them.
+        var left = -1;
+        var right = -1;
+        var runStart = -1;
+        var bestLength = 0;
+        for (var x = 0; x <= smoothed.Length; x++)
+        {
+            if (x < smoothed.Length && smoothed[x])
+            {
+                if (runStart < 0) runStart = x;
+                continue;
+            }
+            if (runStart < 0) continue;
+            if (x - runStart > bestLength)
+            {
+                bestLength = x - runStart;
+                left = runStart;
+                right = x - 1;
+            }
+            runStart = -1;
+        }
+        if (left < 0) return null;
+        var minJarWidth = (int)(frameWidth * 0.04);
+        if (bestLength < minJarWidth) return null;
+        _recentWarmColumns.Enqueue((left, right));
+        while (_recentWarmColumns.Count > WarmColumnHistorySize) _recentWarmColumns.Dequeue();
+        // Densest-cluster mode per edge (±3 px): good-light frames agree on the dough edge,
+        // washout frames scatter to narrower extents, occasional pollution scatters wider —
+        // the mode sits at the true edge and stays put while good frames dominate the
+        // window; a lasting regime change migrates the mode smoothly.
+        var columnLeft = DensestCluster(_recentWarmColumns.Select(c => c.Left), 3);
+        var columnRight = DensestCluster(_recentWarmColumns.Select(c => c.Right), 3);
+        if (columnRight - columnLeft < minJarWidth) return null;
+        var marginY = Math.Max(2, frameHeight / 30);
+        // Scene-change detector: both edges far off the aggregate means the camera moved.
+        // After three consecutive such frames, restart the window on the new scene —
+        // otherwise old-scene bounds would pollute measurements for a full window length.
+        if (Math.Abs(left - columnLeft) > frameWidth * 0.15
+            && Math.Abs(right - columnRight) > frameWidth * 0.15)
+        {
+            _extentDisagreementStreak++;
+            if (_extentDisagreementStreak >= 3)
+            {
+                _recentWarmColumns.Clear();
+                _recentWarmColumns.Enqueue((left, right));
+                _extentDisagreementStreak = 0;
+                return new JarColumn(left, right, marginY, frameHeight - marginY, "warm");
+            }
+        }
+        else
+        {
+            _extentDisagreementStreak = 0;
+        }
+        return new JarColumn(columnLeft, columnRight, marginY, frameHeight - marginY, "warm");
+    }
+
+    /// <summary>Center of the densest ±<paramref name="tolerance"/> cluster of the given
+    /// values (the modal edge position of recent extents). Averaging the cluster members
+    /// damps the quantization to individual pixel values.</summary>
+    private static int DensestCluster(IEnumerable<int> values, int tolerance)
+    {
+        var sorted = values.OrderBy(v => v).ToArray();
+        var bestStart = 0;
+        var bestCount = 0;
+        var bestSum = 0;
+        var start = 0;
+        for (var end = 0; end < sorted.Length; end++)
+        {
+            while (sorted[end] - sorted[start] > 2 * tolerance) start++;
+            var count = end - start + 1;
+            if (count > bestCount)
+            {
+                bestCount = count;
+                bestStart = start;
+                bestSum = 0;
+                for (var i = start; i <= end; i++) bestSum += sorted[i];
+            }
+        }
+        return bestCount > 0 ? (bestSum + bestCount / 2) / bestCount : 0;
+    }
+
+    /// <summary>BGR channel spread (max − min) as a single-channel saturation proxy,
+    /// computed with native OpenCV ops.</summary>
+    private static Mat SaturationMap(Mat color)
+    {
+        Cv2.Split(color, out var channels);
+        try
+        {
+            var max = new Mat();
+            Cv2.Max(channels[0], channels[1], max);
+            Cv2.Max(max, channels[2], max);
+            var min = new Mat();
+            Cv2.Min(channels[0], channels[1], min);
+            Cv2.Min(min, channels[2], min);
+            var spread = new Mat();
+            Cv2.Subtract(max, min, spread);
+            return spread;
+        }
+        finally
+        {
+            foreach (var channel in channels) channel.Dispose();
+        }
     }
 
     private static Mat AutoCanny(Mat blurred, double medianIntensity, double relaxation)
@@ -261,7 +472,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         // Outer (union) span of the wall pair: Hough segment lengths vary with lighting,
         // and intersecting them would make the column — and with it every height
         // measurement — wobble frame to frame.
-        return new JarColumn(wl.X, wr.X, Math.Min(wl.Top, wr.Top), Math.Max(wl.Bottom, wr.Bottom));
+        return new JarColumn(wl.X, wr.X, Math.Min(wl.Top, wr.Top), Math.Max(wl.Bottom, wr.Bottom), "walls");
     }
 
     private static readonly Scalar SessionStartLineColor = new(0, 255, 255); // yellow (BGR)
@@ -283,18 +494,23 @@ public sealed class JarLevelDetector(VisionOptions options)
         Cv2.CvtColor(image, color, ColorConversionCodes.GRAY2BGR);
         if (jarColumn is not null)
         {
+            // Green = verified jar bounds (Hough walls or warm extent). Orange = fallback
+            // full-frame bounds with no verified walls, so an unverified frame is
+            // recognizable at a glance.
+            var wallColor = jarColumn.Kind == "fallback" ? new Scalar(0, 165, 255) : Scalar.Green;
+            var thickness = jarColumn.Kind == "fallback" ? 1 : 2;
             Cv2.Line(
                 color,
                 new Point(jarColumn.Left, jarColumn.Top),
                 new Point(jarColumn.Left, jarColumn.Bottom),
-                Scalar.Green,
-                2);
+                wallColor,
+                thickness);
             Cv2.Line(
                 color,
                 new Point(jarColumn.Right, jarColumn.Top),
                 new Point(jarColumn.Right, jarColumn.Bottom),
-                Scalar.Green,
-                2);
+                wallColor,
+                thickness);
         }
         if (jarColumn is not null && doughSurfaceY is not null)
             Cv2.Line(
@@ -362,6 +578,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             final_row = LastDiagnostics?.FinalRow,
             jar_left_px = jarColumn?.Left,
             jar_right_px = jarColumn?.Right,
+            jar_column_kind = jarColumn?.Kind,
             jar_top_px = jarColumn?.Top,
             dough_top_px = doughSurfaceY,
             jar_bottom_px = jarBottomY,

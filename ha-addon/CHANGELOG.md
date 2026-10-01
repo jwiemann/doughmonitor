@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.37
+
+- Fix the jar column falling back to full-frame bounds (drawn at the door-frame edges on
+  the real camera): the column is now derived from the dough's warm horizontal extent —
+  the longest contiguous warm-column run, separated from warm-looking background structures
+  (a cream-colored rack beside the jar) by the neutral wall gap
+- Stabilize the drawn column lines: the per-frame extent flickers with lighting (dough
+  edges wash out against the wall), so the bounds are the densest-cluster mode over the
+  last ~1 h of extents; a camera/scene change (both edges off the aggregate for 3
+  consecutive frames, or a failed measurement) resets the window immediately instead of
+  blending two scenes for an hour
+- Replay-verified against the live archive: per-scene line spread collapses to 0 px, the
+  surface stays correct across a real camera bump, and the analyzer's plausibility gate
+  blocks the scene-jump readings from the rise series as designed
+
 ## 0.1.36
 
 - Add warm-tone surface detection as the primary method: the dough is tan (large red/blue
