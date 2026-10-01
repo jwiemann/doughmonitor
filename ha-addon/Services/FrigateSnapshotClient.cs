@@ -45,7 +45,27 @@ public sealed class FrigateSnapshotClient(HttpClient http, FrigateOptions option
         catch (UnauthorizedAccessException) when (ct.IsCancellationRequested is false)
         {
         }
+        ArchiveSnapshot(bytes);
         return bytes;
+    }
+
+    /// <summary>Timestamped raw-frame archive for offline replay analysis. Best-effort:
+    /// storage problems must never break the sampling loop.</summary>
+    private void ArchiveSnapshot(byte[] bytes)
+    {
+        if (string.IsNullOrWhiteSpace(options.SnapshotArchiveDirectory)) return;
+        try
+        {
+            var directory = Path.IsPathFullyQualified(options.SnapshotArchiveDirectory)
+                ? options.SnapshotArchiveDirectory
+                : Path.Combine(AppContext.BaseDirectory, options.SnapshotArchiveDirectory);
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, $"{DateTimeOffset.Now:yyyyMMdd_HHmmssfff}.jpg");
+            File.WriteAllBytes(path, bytes);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
     }
 
     private string ResolveSnapshotUrl()

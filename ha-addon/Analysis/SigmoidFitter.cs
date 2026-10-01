@@ -21,12 +21,12 @@ public static class SigmoidFitter
         var initial = Vector<double>.Build.DenseOfArray([Math.Max(maxH * 1.5, 30), 1.0, Math.Max(t[^1], 1.0)]);
         try
         {
-            var objective = ObjectiveFunction.Value(p => SumSquaredError(p, t, h));
+            var objective = ObjectiveFunction.Value(p => SumSquaredError(p, t, h, maxH));
             var result = NelderMeadSimplex.Minimum(objective, initial, 1e-8, 5000);
             var p = result.MinimizingPoint;
             var (l, k, t0) = (p[0], p[1], p[2]);
             if (l <= 0 || k <= 0 || l > 500 || double.IsNaN(l) || double.IsNaN(k)) return null;
-            var rmse = Math.Sqrt(SumSquaredError(p, t, h) / t.Length);
+            var rmse = Math.Sqrt(SumSquaredError(p, t, h, maxH) / t.Length);
             var relError = rmse / l;
             return new SigmoidFit(l, k, t0, relError);
         }
@@ -36,7 +36,7 @@ public static class SigmoidFitter
         }
     }
 
-    private static double SumSquaredError(Vector<double> p, double[] t, double[] h)
+    private static double SumSquaredError(Vector<double> p, double[] t, double[] h, double maxH)
     {
         var (l, k, t0) = (p[0], p[1], p[2]);
         if (l <= 0 || k <= 0) return double.MaxValue;
@@ -47,6 +47,16 @@ public static class SigmoidFitter
             var diff = predicted - h[i];
             sse += diff * diff;
         }
+        // Physics constraints. The fitter only runs while the dough is still rising, so
+        // the plateau must exceed everything observed and the ~88%-of-plateau peak must
+        // lie in the future. Without these, Nelder-Mead settles on "plateau = current
+        // value, inflection in the past" — a perfect fit to the partial segment that
+        // predicts a peak that has already happened.
+        if (l < maxH * 1.02)
+            sse += Math.Pow(maxH * 1.02 - l, 2) * t.Length;
+        var peakTime = t0 + 2.0 / k;
+        if (peakTime < t[^1])
+            sse += Math.Pow(t[^1] - peakTime, 2) * maxH * maxH;
         return sse;
     }
 }

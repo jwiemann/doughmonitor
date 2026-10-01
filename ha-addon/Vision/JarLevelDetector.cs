@@ -18,6 +18,11 @@ public sealed class JarLevelDetector(VisionOptions options)
 
     public DetectionDiagnostics? LastDiagnostics { get; private set; }
 
+    /// <summary>Outcome of the most recent Measure call: "detected", "dark_frame",
+    /// "decode_failed", "no_jar" or "no_surface". Lets offline replay report why a frame
+    /// produced no measurement without re-running detection.</summary>
+    public string LastOutcome { get; private set; } = "no_data";
+
     /// <summary>JPEG bytes of the most recently annotated debug image, or null if none yet.</summary>
     public byte[]? LatestAnnotatedImageBytes { get; private set; }
 
@@ -28,34 +33,71 @@ public sealed class JarLevelDetector(VisionOptions options)
     public LevelMeasurement? Measure(byte[] jpegBytes, DateTimeOffset now)
     {
         using var raw = Cv2.ImDecode(jpegBytes, ImreadModes.Grayscale);
-        if (raw.Empty()) return null;
+        if (raw.Empty())
+        {
+            LastOutcome = "decode_failed";
+            LastDiagnostics = new DetectionDiagnostics("decode_failed", 0, null, null);
+            return null;
+        }
         using var img = ApplyConfiguredRoi(raw);
+        // Intensity statistics computed once per frame: Canny thresholds and the
+        // dark-frame gate share them.
+        var (medianIntensity, p10, p90) = ComputeIntensityStats(img);
+        var frameStats = (Mean: (double?)Cv2.Mean(img).Val0, Median: (double?)medianIntensity,
+            P10: (double?)p10, P90: (double?)p90);
+        // Night frames without backlight are uniformly dark: nothing bright enough to be
+        // a lit jar (P90 floor) and no meaningful contrast (P90-P10 floor). The edge-energy
+        // method would "detect" noise there and pollute the growth series. Percentile-based
+        // so a backlit night frame (dark room, bright jar) still passes.
+        if (p90 < options.MinFrameIntensity || p90 - p10 < options.MinFrameContrast)
+        {
+            LastOutcome = "dark_frame";
+            LastDiagnostics = WithFrameStats(new DetectionDiagnostics("dark", 0, null, null), frameStats);
+            if (options.DebugSaveAnnotatedImages)
+                SaveDebugImage(img, null, null, now);
+            return null;
+        }
         using var blurred = new Mat();
         Cv2.GaussianBlur(img, blurred, new Size(5, 5), 0);
         // Pass 1: wall-based detection at two Canny relaxation levels.
         foreach (var relaxation in new[] { 1.0, 0.6 })
         {
-            using var edges = AutoCanny(blurred, relaxation);
+            using var edges = AutoCanny(blurred, medianIntensity, relaxation);
             var jarColumn = FindJarColumn(edges, img.Width, img.Height, relaxation);
             if (jarColumn is null) continue;
-            var measurement = MeasureWithinColumn(edges, img, jarColumn, now);
-            if (measurement is not null) return measurement;
+            var measurement = MeasureWithinColumn(edges, img, jarColumn, now, frameStats);
+            if (measurement is not null)
+            {
+                LastOutcome = "detected";
+                return measurement;
+            }
         }
         // Pass 2: walls invisible (transparent container / box filling the frame)
         // Use the full frame (minus a border margin) as the column.
         foreach (var relaxation in new[] { 1.0, 0.6 })
         {
-            using var edges = AutoCanny(blurred, relaxation);
+            using var edges = AutoCanny(blurred, medianIntensity, relaxation);
             var fallbackColumn = BuildFallbackColumn(img);
-            var measurement = MeasureWithinColumn(edges, img, fallbackColumn, now);
-            if (measurement is not null) return measurement;
+            var measurement = MeasureWithinColumn(edges, img, fallbackColumn, now, frameStats);
+            if (measurement is not null)
+            {
+                LastOutcome = "detected";
+                return measurement;
+            }
         }
+        LastOutcome = "no_surface";
+        LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
         if (options.DebugSaveAnnotatedImages)
             SaveDebugImage(img, null, null, now);
         return null;
     }
 
-    private LevelMeasurement? MeasureWithinColumn(Mat edges, Mat gray, JarColumn jarColumn, DateTimeOffset now)
+    private LevelMeasurement? MeasureWithinColumn(
+        Mat edges,
+        Mat gray,
+        JarColumn jarColumn,
+        DateTimeOffset now,
+        (double? Mean, double? Median, double? P10, double? P90) frameStats)
     {
         var inset = Math.Max(3, (jarColumn.Right - jarColumn.Left) / 10);
         var rect = new Rect(
@@ -63,10 +105,14 @@ public sealed class JarLevelDetector(VisionOptions options)
             jarColumn.Top,
             jarColumn.Right - jarColumn.Left - 2 * inset,
             jarColumn.Bottom - jarColumn.Top);
-        if (rect.Width <= 0 || rect.Height <= 0) return null;
+        if (rect.Width <= 0 || rect.Height <= 0)
+        {
+            LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
+            return null;
+        }
         using var columnEdges = edges[rect];
         using var columnGray = gray[rect];
-        var doughTop = FindDoughSurface(columnEdges, columnGray);
+        var doughTop = FindDoughSurface(columnEdges, columnGray, frameStats);
         if (doughTop is null)
         {
             SaveDebugImage(gray, jarColumn, null, now);
@@ -86,29 +132,44 @@ public sealed class JarLevelDetector(VisionOptions options)
         return new JarColumn(marginX, img.Width - marginX, marginY, img.Height - marginY);
     }
 
-    private static Mat AutoCanny(Mat blurred, double relaxation)
+    private static Mat AutoCanny(Mat blurred, double medianIntensity, double relaxation)
     {
-        var median = ComputeMedianIntensity(blurred);
-        var lower = Math.Max(10, 0.66 * median * relaxation);
-        var upper = Math.Max(lower + 20, 1.33 * median);
+        var lower = Math.Max(10, 0.66 * medianIntensity * relaxation);
+        var upper = Math.Max(lower + 20, 1.33 * medianIntensity);
         var edges = new Mat();
         Cv2.Canny(blurred, edges, lower, upper);
         return edges;
     }
 
-    private static double ComputeMedianIntensity(Mat gray)
+    private static (double Median, double P10, double P90) ComputeIntensityStats(Mat gray)
     {
         var hist = new Mat();
         Cv2.CalcHist([gray], [0], null, hist, 1, [256], [new Rangef(0, 256)]);
         var total = gray.Rows * gray.Cols;
+        double Percentile(double fraction)
+        {
+            var target = total * fraction;
+            var running = 0.0;
+            for (var i = 0; i < 256; i++)
+            {
+                running += hist.At<float>(i);
+                if (running >= target) return i;
+            }
+            return 255;
+        }
+        var median = 255.0;
         var half = total / 2.0;
-        double cumulative = 0;
+        var cumulative = 0.0;
         for (var i = 0; i < 256; i++)
         {
             cumulative += hist.At<float>(i);
-            if (cumulative >= half) return i;
+            if (cumulative >= half)
+            {
+                median = i;
+                break;
+            }
         }
-        return 128;
+        return (median, Percentile(0.10), Percentile(0.90));
     }
 
     private Mat ApplyConfiguredRoi(Mat src)
@@ -159,11 +220,19 @@ public sealed class JarLevelDetector(VisionOptions options)
         }
         if (best is null) return null;
         var (wl, wr, _) = best.Value;
-        return new JarColumn(wl.X, wr.X, Math.Max(wl.Top, wr.Top), Math.Min(wl.Bottom, wr.Bottom));
+        // Outer (union) span of the wall pair: Hough segment lengths vary with lighting,
+        // and intersecting them would make the column — and with it every height
+        // measurement — wobble frame to frame.
+        return new JarColumn(wl.X, wr.X, Math.Min(wl.Top, wr.Top), Math.Max(wl.Bottom, wr.Bottom));
     }
+
+    /// <summary>Path of the debug image written for the most recent Measure call, or null
+    /// when disk persistence is off (annotated bytes only) or the frame failed to decode.</summary>
+    public string? LastDebugImagePath { get; private set; }
 
     private void SaveDebugImage(Mat image, JarColumn? jarColumn, int? doughSurfaceY, DateTimeOffset now)
     {
+        LastDebugImagePath = null;
         using var color = new Mat();
         Cv2.CvtColor(image, color, ColorConversionCodes.GRAY2BGR);
         if (jarColumn is not null)
@@ -194,12 +263,22 @@ public sealed class JarLevelDetector(VisionOptions options)
         {
             var directory = Path.Combine(AppContext.BaseDirectory, options.DebugOutputDirectory);
             Directory.CreateDirectory(directory);
-            var fileName = $"{now:yyyyMMdd_HHmmssfff}.jpg";
-            Cv2.ImWrite(Path.Combine(directory, fileName), color);
+            var filePath = Path.Combine(directory, $"{now:yyyyMMdd_HHmmssfff}.jpg");
+            // Timestamps from file-mtime fallbacks can collide (same second or FAT mtime
+            // granularity); never overwrite a sibling debug image.
+            for (var index = 1; File.Exists(filePath); index++)
+            {
+                filePath = Path.Combine(directory, $"{now:yyyyMMdd_HHmmssfff}_{index}.jpg");
+            }
+            Cv2.ImWrite(filePath, color);
+            LastDebugImagePath = filePath;
         }
     }
 
-    private int? FindDoughSurface(Mat columnEdges, Mat columnGray)
+    private int? FindDoughSurface(
+        Mat columnEdges,
+        Mat columnGray,
+        (double? Mean, double? Median, double? P10, double? P90) frameStats)
     {
         var rowEnergy = ReduceRows(columnEdges);
         // Intensity profile from the central strip of the column only: the dough's dark
@@ -210,23 +289,33 @@ public sealed class JarLevelDetector(VisionOptions options)
         using var centralStrip = columnGray[new Rect(stripX, 0, stripWidth, columnGray.Height)];
         var rowIntensity = ReduceRows(centralStrip, average: true);
         var result = FindDoughSurfaceCombined(rowEnergy, rowIntensity, out var diagnostics);
-        LastDiagnostics = diagnostics ?? new DetectionDiagnostics("none", 0, null, null);
+        LastDiagnostics = WithFrameStats(diagnostics ?? new DetectionDiagnostics("none", 0, null, null), frameStats);
         return result;
     }
 
+    private static DetectionDiagnostics WithFrameStats(
+        DetectionDiagnostics diagnostics,
+        (double? Mean, double? Median, double? P10, double? P90) frameStats) =>
+        diagnostics with
+        {
+            FrameMean = frameStats.Mean,
+            FrameMedian = frameStats.Median,
+            FrameP10 = frameStats.P10,
+            FrameP90 = frameStats.P90
+        };
+
+    /// <summary>Resolves the jar bottom in column coordinates. The wall-derived column lower
+    /// bound is the default; a visible horizontal edge only refines it within a band just
+    /// above that bound. Picking any strong edge below the dough (e.g. the dough surface
+    /// edge itself) collapses the height and poisons the rise series.</summary>
     private static int FindJarBottom(Mat columnEdges, Mat columnGray, int doughTop, int fallbackBottom)
     {
-        var stripX = columnGray.Width / 4;
-        var stripWidth = Math.Max(1, columnGray.Width / 2);
-        using var centralStrip = columnEdges[new Rect(stripX, 0, stripWidth, columnEdges.Height)];
-        var rowEnergy = ReduceRows(centralStrip);
-        var lowerEdge = FindJarBottomFromHorizontalEdge(centralStrip, doughTop, fallbackBottom);
-        if (lowerEdge is not null)
-            return lowerEdge.Value;
-        return FindJarBottomFromEnergy(rowEnergy, fallbackBottom, doughTop);
+        var bandStart = Math.Max(doughTop + 2, fallbackBottom - Math.Max(4, fallbackBottom / 4));
+        var lowerEdge = FindJarBottomFromHorizontalEdge(columnEdges, bandStart, fallbackBottom);
+        return lowerEdge ?? fallbackBottom;
     }
 
-    private static int? FindJarBottomFromHorizontalEdge(Mat columnEdges, int doughTop, int fallbackBottom)
+    private static int? FindJarBottomFromHorizontalEdge(Mat columnEdges, int bandStart, int fallbackBottom)
     {
         if (columnEdges.Rows < 3 || columnEdges.Cols < 3) return null;
         var lines = Cv2.HoughLinesP(
@@ -247,47 +336,11 @@ public sealed class JarLevelDetector(VisionOptions options)
                 Y = (l.P1.Y + l.P2.Y) / 2,
                 Length = Math.Abs(l.P1.X - l.P2.X)
             })
-            .Where(x => x.Y > doughTop + 2 && x.Y <= fallbackBottom)
+            .Where(x => x.Y >= bandStart && x.Y <= fallbackBottom)
             .OrderByDescending(x => x.Length)
             .ThenByDescending(x => x.Y)
             .ToArray();
         return horizontals.Length > 0 ? horizontals[0].Y : null;
-    }
-
-    public static int FindJarBottomFromEnergy(IReadOnlyList<float> rowEnergy, int fallbackBottom, int? doughTop = null)
-    {
-        if (rowEnergy.Count == 0) return fallbackBottom;
-        var smoothed = MovingAverage(rowEnergy, 5);
-        var searchStart = Math.Max(0, (doughTop ?? 0) + 1);
-        searchStart = Math.Max(searchStart, (int)(smoothed.Length * 0.35));
-        var searchEnd = Math.Max(searchStart + 1, Math.Min(smoothed.Length - 1, fallbackBottom));
-        if (searchEnd <= searchStart) return fallbackBottom;
-        var window = smoothed.Skip(searchStart)
-            .Take(Math.Max(1, searchEnd - searchStart + 1))
-            .ToArray();
-        if (window.Length == 0) return fallbackBottom;
-        var baseline = window.Average();
-        var maxEnergy = window.Max();
-        if (maxEnergy <= baseline) return fallbackBottom;
-        var bestRow = -1;
-        var bestScore = double.NegativeInfinity;
-        for (var y = searchStart; y <= searchEnd; y++)
-        {
-            var energy = smoothed[y];
-            var left = y > 0 ? smoothed[y - 1] : energy;
-            var right = y < smoothed.Length - 1 ? smoothed[y + 1] : energy;
-            var prominence = energy - Math.Min(left, right);
-            var peakStrength = energy - baseline;
-            var depthBias = (double)(y - searchStart) / Math.Max(1, searchEnd - searchStart + 1) * 0.05;
-            var lowerBias = (double)(searchEnd - y) / Math.Max(1, searchEnd - searchStart + 1) * 0.15;
-            var score = peakStrength * 1.35 + prominence * 0.75 + lowerBias - depthBias;
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestRow = y;
-            }
-        }
-        return bestRow >= 0 ? bestRow : fallbackBottom;
     }
 
     private static float[] ReduceRows(Mat column, bool average = false)

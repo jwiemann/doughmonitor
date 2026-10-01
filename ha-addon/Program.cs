@@ -5,8 +5,15 @@ using SourdoughMonitor;
 using SourdoughMonitor.Analysis;
 using SourdoughMonitor.Config;
 using SourdoughMonitor.Mqtt;
+using SourdoughMonitor.Replay;
 using SourdoughMonitor.Services;
 using SourdoughMonitor.Vision;
+
+if (args.Length > 0 && args[0] is "replay")
+{
+    Environment.ExitCode = await ReplayRunner.RunAsync(args[1..]);
+    return;
+}
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.AddConsole();

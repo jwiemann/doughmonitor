@@ -86,6 +86,10 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                 band_contrast = diagnostics?.BandContrast ?? 0,
                 band_top_row = diagnostics?.BandTopRow,
                 final_row = diagnostics?.FinalRow,
+                frame_mean = diagnostics?.FrameMean,
+                frame_median = diagnostics?.FrameMedian,
+                frame_p10 = diagnostics?.FrameP10,
+                frame_p90 = diagnostics?.FrameP90,
                 dough_top_px = measurement?.DoughTopPx,
                 jar_bottom_px = measurement?.JarBottomPx,
                 jar_height_px =

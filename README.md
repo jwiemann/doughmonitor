@@ -58,6 +58,46 @@ docker run -d \
 
 Configure via `appsettings.json` or environment variables (e.g. `Monitor__Frigate__BaseUrl`).
 
+## Snapshot archiving & offline replay (debugging)
+
+To tune the detector on real footage, point the add-on at an archive directory — every
+fetched snapshot is then written there timestamped (`yyyyMMdd_HHmmssfff.jpg`), giving you a
+complete week of raw frames to replay:
+
+| Option | Description |
+|---|---|
+| `frigate_snapshot_archive_directory` | Directory for timestamped raw snapshots (empty = off) |
+
+Set it in the add-on options or via `Monitor:Frigate:SnapshotArchiveDirectory` in
+`appsettings.json`. Copy the folder off the box after a bake and run the replay CLI:
+
+```bash
+cd ha-addon
+dotnet run -- replay <folder-with-jpgs> [--out replay-out] [--config appsettings.json] [--roi x,y,w,h]
+```
+
+The replay runs every frame through the live detector (same code path as the add-on) and
+writes to the output directory:
+
+- `readings.csv` — one row per frame: outcome (`detected` / `dark_frame` / `no_surface` /
+  `decode_failed`), method (`band` / `edge`), lighting stats (mean/median/P10/P90), dough
+  top/bottom/height, tracker gate decision, rise %, rate, predicted peak
+- `summary.json` — aggregate counts, method distribution, final growth/reading state
+- `report.html` — rise curve with day markers, outcome timeline (dark frames marked), anomaly
+  table and every annotated debug frame inline
+
+Frames are timestamped from their file names (addon archive, Frigate/HA exports and typical
+camera names like `IMG_2026-09-28_12-00-00.jpg` all parse); files without a parseable name
+fall back to modification time and are flagged in the CSV.
+
+## Dark-frame gate
+
+Frames whose 90th-percentile intensity is below `Vision:MinFrameIntensity` (default 25) or
+whose intensity spread (P90−P10) is below `Vision:MinFrameContrast` (default 30) are rejected
+as `dark_frame` — night snapshots without backlight carry no usable contrast and would
+otherwise feed noise into the growth series. A backlit jar in a dark room still passes, so
+backlit night sessions keep measuring.
+
 ## Configuration (appsettings.json)
 
 ```json
@@ -83,6 +123,8 @@ Configure via `appsettings.json` or environment variables (e.g. `Monitor__Frigat
       "RoiHeight": null,
       "MinJarWallFraction": 0.08,
       "MinJarWidthFraction": 0.04,
+      "MinFrameIntensity": 25.0,
+      "MinFrameContrast": 30.0,
       "DebugSaveAnnotatedImages": false
     },
     "Analysis": {

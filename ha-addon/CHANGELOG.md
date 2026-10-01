@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.23
+
+- Add dark-frame gate: frames with no sufficiently bright region (P90) or no contrast (P90-P10) are rejected instead of feeding night noise into the series; backlit night frames still pass
+- Add timestamped raw snapshot archiving (`snapshot_archive_directory`) for offline analysis
+- Add `replay` CLI: batch-analyze an exported snapshot week into per-frame CSV, summary.json and an HTML report with annotated frames
+- Record frame lighting statistics (mean/median/P10/P90) in diagnostics and debug MQTT payload
+- Stabilize jar geometry: wall-derived column with union extents and bottom-edge confirmation band, so heights no longer wobble with lighting
+- Constrain sigmoid peak prediction physically: plateau must exceed the observed rise and the predicted peak must lie in the future
+- Fix debug image filename collisions and stop overwriting the raw frame archive picture
+
 ## 0.1.22
 
 - Refactor SigmoidFitter, update configuration options, and clean up code structure

@@ -10,5 +10,10 @@ public sealed class FrigateOptions
 
     public string? AccessToken { get; init; }
 
+    /// <summary>When set, every fetched snapshot is archived to this directory as
+    /// yyyyMMdd_HHmmssfff.jpg — the raw frame record for offline replay analysis.
+    /// Absolute path, or relative to the app base directory. Empty = archiving off.</summary>
+    public string? SnapshotArchiveDirectory { get; init; }
+
     public int SampleIntervalMinutes { get; init; } = 10;
 }

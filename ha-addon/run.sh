@@ -11,6 +11,8 @@ CONFIG_PATH=/data/options.json
 # --- Frigate ---
 export Monitor__Frigate__Camera="$(jq -r '.frigate_camera' "$CONFIG_PATH")"
 export Monitor__Frigate__SampleIntervalMinutes="$(jq -r '.frigate_sample_interval_minutes' "$CONFIG_PATH")"
+# --- Raw snapshot archive (for offline replay/debug analysis; empty = off) ---
+export Monitor__Frigate__SnapshotArchiveDirectory="$(jq -r '.snapshot_archive_directory // ""' "$CONFIG_PATH")"
 
 # --- MQTT ---
 export Monitor__Mqtt__DeviceId="$(jq -r '.mqtt_device_id' "$CONFIG_PATH")"
