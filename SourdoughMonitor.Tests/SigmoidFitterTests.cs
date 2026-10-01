@@ -32,9 +32,11 @@ public class SigmoidFitterTests
         Assert.NotNull(fit);
         var lastHours = (samples[^1].Time - samples[0].Time).TotalHours;
         // The constraint is a penalty, not a hard bound; small (<6 min) overshoots
-        // are acceptable — the sensor granularity is minutes.
-        Assert.True(fit!.PeakHoursFromStart >= lastHours - 0.1,
-            $"peak at {fit.PeakHoursFromStart}h must not precede last sample {lastHours}h");
+        // are acceptable — the sensor granularity is minutes. 0.97 is the production
+        // PeakFraction: the "practical peak" the analyzer reports.
+        var peakHours = fit!.HoursAtFraction(0.97);
+        Assert.True(peakHours >= lastHours - 0.1,
+            $"peak at {peakHours}h must not precede last sample {lastHours}h");
     }
 
     [Fact]
