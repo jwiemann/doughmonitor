@@ -28,4 +28,4 @@ sourdough_state.json
 Thumbs.db
 .DS_Store
 # Local replay/analysis scratch
-tmp-*/
+tmp-*
