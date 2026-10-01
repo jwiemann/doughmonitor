@@ -830,7 +830,6 @@ public sealed class JarLevelDetector(VisionOptions options)
         // glare instead of down to the real dough surface. The median ignores it as long as
         // it covers less than half the strip width, which it reliably does.
         var rowIntensity = ReduceRowsMedian(centralStrip);
-        var rowSaturation = ReduceRowsSaturationMedian(centralStripColor);
         // Coverage profiles: per-row fraction of strip pixels that are dough (warm / dark).
         // The row MEDIAN flips as soon as the dough's back edge (which appears higher
         // through the cylindrical glass) covers half the strip — the front edge, where the
@@ -838,7 +837,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         // the jar interior (see InteriorBounds) so wall columns don't cap the fraction.
         float[]? warmCoverage = null;
         float[]? darkCoverage = null;
-        var satNeutral = NeutralReferenceLevel(MovingAverage(rowSaturation, 7));
+        ComputeTopQuarterRefs(centralStripColor, centralStrip, out var satNeutral, out var _);
         if (satNeutral is { } satRef)
         {
             using var satMap = SaturationMap(centralStripColor);
@@ -864,7 +863,6 @@ public sealed class JarLevelDetector(VisionOptions options)
         var result = FindDoughSurfaceCombined(
             rowEnergy,
             rowIntensity,
-            rowSaturation,
             warmCoverage,
             darkCoverage,
             out var diagnostics,
@@ -872,9 +870,6 @@ public sealed class JarLevelDetector(VisionOptions options)
             options.MinAmbientBandContrast,
             options.DarkBandMaxIntensity,
             options.MinDarkBandFraction,
-            options.MinWarmSaturationStep,
-            options.StrongWarmSaturation,
-            options.MaxNeutralReferenceSaturation,
             options.FrontEdgeCoverageFraction);
         LastDiagnostics = WithFrameStats(diagnostics ?? new DetectionDiagnostics("none", 0, null, null), frameStats);
         return result;
@@ -1042,7 +1037,6 @@ public sealed class JarLevelDetector(VisionOptions options)
     private static int? FindDoughSurfaceCombined(
         IReadOnlyList<float> rowEnergy,
         IReadOnlyList<float> rowIntensity,
-        IReadOnlyList<float> rowSaturation,
         float[]? warmCoverage,
         float[]? darkCoverage,
         out DetectionDiagnostics? diagnostics,
@@ -1050,12 +1044,9 @@ public sealed class JarLevelDetector(VisionOptions options)
         double minAmbientContrast,
         double darkBandMaxIntensity,
         double minDarkBandFraction,
-        double minWarmSaturationStep,
-        double strongWarmSaturation,
-        double maxNeutralReferenceSaturation,
         double frontEdgeCoverageFraction)
     {
-var longRun = (int)Math.Ceiling(Math.Max(4, rowEnergy.Count * minDarkBandFraction));
+        var longRun = (int)Math.Ceiling(Math.Max(4, rowEnergy.Count * minDarkBandFraction));
         var bandTop = FindDoughBandTop(
             rowIntensity,
             out var bandContrast,
@@ -1101,12 +1092,11 @@ var longRun = (int)Math.Ceiling(Math.Max(4, rowEnergy.Count * minDarkBandFractio
         return edgeSupported ? edgeRow : null;
     }
 
-    /// <summary>Front edge from the warm-coverage profile: the first row (scanning from the
-    /// top) reaching 60% of the warm plateau (the saturated dough body's coverage), held
-    /// for the dough-body length (dips tolerated to 35% of the plateau — bubbles, frost
-    /// patches). A thin warm glare line fails the hold rule; a shadowed wall has no warm
-    /// signal at all. Returns null when the frame has no colored dough body (plateau
-    /// below 50% — pale fresh feed), letting the dark-band path take over.</summary>
+    /// <summary>Front edge from the warm-coverage profile: the top of the LONGEST run of rows
+    /// whose warm coverage reaches 60% of the plateau (the saturated dough body). The pale
+    /// stir-smudge above the dough has warm patches, but they never form a sustained run —
+    /// the body does. Returns null when the frame has no colored dough body (plateau below
+    /// 50% — pale fresh feed), letting the dark-band path take over.</summary>
     private static int? FrontEdgeByWarmCoverage(float[]? coverage, int longRun)
     {
         if (coverage is null || coverage.Length == 0) return null;
@@ -1119,18 +1109,28 @@ var longRun = (int)Math.Ceiling(Math.Max(4, rowEnergy.Count * minDarkBandFractio
         }
         if (plateau < 0.5f) return null;
         var threshold = 0.6 * plateau;
-        var continuation = 0.35 * plateau;
-        for (var y = searchStart; y < n; y++)
+        var minSolid = Math.Max(4, longRun / 2);
+        var left = -1;
+        var right = -1;
+        var runStart = -1;
+        var best = 0;
+        for (var y = searchStart; y <= n; y++)
         {
-            if (coverage[y] < threshold) continue;
-            var sustained = true;
-            for (var k = 1; k < longRun && y + k < n; k++)
+            var on = y < n && coverage[y] >= threshold;
+            if (on && runStart < 0) runStart = y;
+            if (!on && runStart >= 0)
             {
-                if (coverage[y + k] < continuation) { sustained = false; break; }
+                if (y - runStart > best)
+                {
+                    best = y - runStart;
+                    left = runStart;
+                    right = y - 1;
+                }
+                runStart = -1;
             }
-            if (sustained) return y;
         }
-        return null;
+        if (left < 0 || best < minSolid) return null;
+        return left;
     }
 
     /// <summary>Mean coverage over [start .. start+length) (clamped to the profile). A warm
@@ -1193,58 +1193,6 @@ var longRun = (int)Math.Ceiling(Math.Max(4, rowEnergy.Count * minDarkBandFractio
             }
         }
         return bestRow;
-    }
-
-    /// <summary>The neutral reference: modal saturation of the profile's top quarter (the
-    /// glass/wall above the dough). Returns null when the top quarter holds no dominant
-    /// level.</summary>
-    private static double? NeutralReferenceLevel(double[] smoothed)
-    {
-        var quarter = Math.Max(4, smoothed.Length / 4);
-        var hist = new int[256];
-        for (var y = 0; y < quarter && y < smoothed.Length; y++)
-        {
-            hist[Math.Clamp((int)Math.Round(smoothed[y]), 0, 255)]++;
-        }
-        var best = 0;
-        var bestCount = 0;
-        for (var i = 0; i < 256; i++)
-        {
-            if (hist[i] > bestCount)
-            {
-                bestCount = hist[i];
-                best = i;
-            }
-        }
-        return bestCount > 0 ? (double?)best : null;
-    }
-
-    /// <summary>Per-row median channel spread (max−min across B/G/R) of a BGR strip —
-    /// the saturation proxy. Median for the same glare-robustness reasons as the
-    /// intensity profile.</summary>
-    private static float[] ReduceRowsSaturationMedian(Mat column)
-    {
-        var rows = column.Rows;
-        var cols = column.Cols;
-        var result = new float[rows];
-        var buffer = new int[cols];
-        var mid = cols / 2;
-        for (var y = 0; y < rows; y++)
-        {
-            for (var x = 0; x < cols; x++)
-            {
-                var pixel = column.Get<Vec3b>(y, x);
-                var b = pixel.Item0;
-                var g = pixel.Item1;
-                var r = pixel.Item2;
-                var max = Math.Max(b, Math.Max(g, r));
-                var min = Math.Min(b, Math.Min(g, r));
-                buffer[x] = max - min;
-            }
-            Array.Sort(buffer);
-            result[y] = cols % 2 == 0 ? (buffer[mid - 1] + buffer[mid]) / 2f : buffer[mid];
-        }
-        return result;
     }
 
     /// <summary>Finds the top edge of the dough band in the row intensity profile,

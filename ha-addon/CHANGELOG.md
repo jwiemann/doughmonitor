@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.45
+
+- Warm threshold calibrated (step 9): the surface line lands on the user-confirmed dough
+  boundary instead of ~50 px inside the dough. Dead warm-run code removed.
+
 ## 0.1.44
 
 - Surface = the warm (color) boundary: the pale smear band above the dough is static

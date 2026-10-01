@@ -41,21 +41,12 @@ public sealed class VisionOptions
     public double DarkBandMaxIntensity { get; init; } = 135.0;
 
     /// <summary>Primary surface signal under ambient light: the dough is warm-toned
-    /// (tan) while glass/wall/background are neutral. A warm band qualifies when its
+    /// (tan) while glass/wall/background are neutral. A warm pixel counts when its
     /// saturation exceeds the neutral glass reference by at least this step.
-    /// Validated on real frames: glass sat 2-5, dough sat 25-32.</summary>
-    public double MinWarmSaturationStep { get; init; } = 12.0;
-
-    /// <summary>A short warm band must exceed this saturation step to be accepted —
-    /// set above the observed warm table/wood signal (~13-15) so background wood never
-    /// passes, while real dough (25+) does even as a thin layer.</summary>
-    public double StrongWarmSaturation { get; init; } = 22.0;
-
-    /// <summary>The warm-band method only applies when the glass/wall reference level
-    /// (top-quarter modal saturation) is at most this neutral. A strongly tinted scene
-    /// (warm room light everywhere) has no neutral reference and falls through to the
-    /// brightness band method.</summary>
-    public double MaxNeutralReferenceSaturation { get; init; } = 10.0;
+    /// Calibrated against the user-confirmed dough surface: step 9 (sat ≥ 12) lands the
+    /// front edge on the confirmed boundary; step 12 (sat ≥ 15) read ~50 px too deep
+    /// (the dough's upper skin is less saturated than its body).</summary>
+    public double MinWarmSaturationStep { get; init; } = 9.0;
 
     /// <summary>Column-level warmth for the jar-extent detection: a zone row counts as warm
     /// when its saturation exceeds the neutral top-quarter reference by this step.
