@@ -1055,7 +1055,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         double maxNeutralReferenceSaturation,
         double frontEdgeCoverageFraction)
     {
-        var longRun = (int)Math.Ceiling(Math.Max(4, rowEnergy.Count * minDarkBandFraction));
+var longRun = (int)Math.Ceiling(Math.Max(4, rowEnergy.Count * minDarkBandFraction));
         var bandTop = FindDoughBandTop(
             rowIntensity,
             out var bandContrast,
@@ -1063,31 +1063,19 @@ public sealed class JarLevelDetector(VisionOptions options)
             minAmbientContrast,
             darkBandMaxIntensity,
             minDarkBandFraction);
-        var warmTop = FindWarmBandTop(
-            rowSaturation,
-            out var warmContrast,
-            minWarmSaturationStep,
-            strongWarmSaturation,
-            maxNeutralReferenceSaturation,
-            minDarkBandFraction);
-        // The warm top is only trusted when it does not start DEEPER than the dark band
-        // top: dough whose upper layer is dark-but-not-warm (wet, freshly fed) makes the
-        // warm median run begin inside the dough — observed live (warm 576 vs dark 477).
-        var warmTrusted = warmTop is not null
-            && (bandTop is null || warmTop.Value <= bandTop.Value + Math.Max(10, rowEnergy.Count * 2 / 100));
-        if (warmTrusted)
+        // The warm (color) boundary IS the surface: the pale stir-smear/frost band above
+        // the dough body is static residue on the glass — the dark boundary tracks it and
+        // would freeze the level while the dough rises past it. The warm crossing = the
+        // colored body's top = the true level. No colored body (fresh pale feed): fall
+        // through to the dark band, which then reads the smear boundary — biased high,
+        // but present, and re-baselined when the color returns.
+        var warmFront = FrontEdgeByWarmCoverage(warmCoverage, longRun);
+        if (warmFront is not null)
         {
-            // The color signal defines the surface: the first row reaching 60% of the
-            // warm-coverage plateau (the saturated, teig-artiger body). The dark layer
-            // above it (wet, shadowed) is not dough-colored, so the DARK front edge would
-            // sit too high. No sustained crossing: fall through to the band path.
-            var warmFront = FrontEdgeByWarmCoverage(warmCoverage, longRun);
-            if (warmFront is not null)
-            {
-                var snapped = SnapToEdge(rowEnergy, warmFront.Value);
-                diagnostics = new DetectionDiagnostics("warm", warmContrast, warmTop, snapped);
-                return snapped;
-            }
+            var snapped = SnapToEdge(rowEnergy, warmFront.Value);
+            var bodyContrast = MeanCoverage(warmCoverage, warmFront.Value, Math.Max(8, longRun / 2));
+            diagnostics = new DetectionDiagnostics("warm", bodyContrast, warmFront, snapped);
+            return snapped;
         }
         // Qualification (contrast + darkness + length rules) lives in FindDoughBandTop;
         // a non-null result is already accepted.
@@ -1205,53 +1193,6 @@ public sealed class JarLevelDetector(VisionOptions options)
             }
         }
         return bestRow;
-    }
-
-    /// <summary>Finds the dough surface via the warm-tone step: sourdough is tan (the
-    /// red/blue channel spread is large) while glass, wall and background are neutral.
-    /// The reference level is the modal saturation of the profile's top quarter (the glass
-    /// above the dough). The surface is the topmost row whose saturation rises
-    /// persistently above (neutral + step) — a long warm band qualifies at the weaker
-    /// step, a short one only at the strong step (real dough measured: sat 25-32 vs glass
-    /// 2-5). Inverted geometry compared to the dark-band search: here we look for warm
-    /// runs, and the neutral dip below the jar bottom breaks the run naturally.</summary>
-    public static int? FindWarmBandTop(
-        IReadOnlyList<float> rowSaturation,
-        out double contrast,
-        double minWarmStep = 12.0,
-        double strongWarmStep = 22.0,
-        double maxNeutralReferenceSaturation = 10.0,
-        double minWarmBandFraction = 0.2)
-    {
-        contrast = 0;
-        if (rowSaturation.Count < 10) return null;
-        var smoothed = MovingAverage(rowSaturation, 7);
-        var n = smoothed.Length;
-        var searchStart = Math.Max(1, (int)(n * 0.05));
-        if (searchStart >= n - 5) return null;
-        var neutral = NeutralReferenceLevel(smoothed);
-        if (neutral is null || neutral > maxNeutralReferenceSaturation) return null;
-        var line = neutral.Value + minWarmStep;
-        var minRun = Math.Max(3, n / 60);
-        var longRun = (int)Math.Ceiling(Math.Max(4, n * minWarmBandFraction));
-        var insideWindow = Math.Max(4, n / 5);
-        for (var y = searchStart; y < n; y++)
-        {
-            if (smoothed[y] < line) continue;
-            var end = y + 1;
-            while (end < n && smoothed[end] >= line) end++;
-            var runLength = end - y;
-            if (runLength < minRun) continue;
-            var insideEnd = Math.Min(end, y + insideWindow);
-            double insideSum = 0;
-            for (var row = y; row < insideEnd; row++) insideSum += smoothed[row];
-            var insideMean = insideSum / (insideEnd - y);
-            var step = insideMean - neutral.Value;
-            if (runLength < longRun && step < strongWarmStep) continue;
-            contrast = step;
-            return y;
-        }
-        return null;
     }
 
     /// <summary>The neutral reference: modal saturation of the profile's top quarter (the

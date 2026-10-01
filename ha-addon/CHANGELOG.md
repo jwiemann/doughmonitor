@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.44
+
+- Surface = the warm (color) boundary: the pale smear band above the dough is static
+  residue on the glass; the dark boundary tracks it and froze the level while the dough
+  rose past it. Dark band stays as the fallback for pale feeds; warm-only frames are
+  dropped (no consistency anchor available).
+
 ## 0.1.43
 
 - Surface line sits at the saturated dough boundary (60% of the warm-coverage plateau)
