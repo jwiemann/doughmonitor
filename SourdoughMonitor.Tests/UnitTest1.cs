@@ -335,4 +335,56 @@ public class RiseAnalyzerTests
         Assert.True(contrast >= 55);
         Assert.NotNull(bandTop);
     }
+
+    [Fact]
+    public void Analyze_ResetsSessionWhenDoughDropsBelowBaselineAfterRefeed()
+    {
+        // Re-feed: the dough level drops far below the session baseline while the clamped
+        // rise percent hides it at 0% — the session must reset on the absolute height drop.
+        var analyzer = NewAnalyzer();
+        var t0 = new DateTimeOffset(2026, 10, 1, 7, 15, 0, TimeSpan.Zero);
+        for (var i = 0; i < 3; i++)
+        {
+            analyzer.Analyze(new LevelMeasurement(t0.AddMinutes(5 * i), 100, 0, 200));
+        }
+        // Dough top drops to 140 (height 60 vs baseline 100) and stays there.
+        RiseReading? last = null;
+        for (var i = 0; i < 8; i++)
+        {
+            last = analyzer.Analyze(new LevelMeasurement(t0.AddMinutes(15 + 5 * i), 140, 0, 200));
+        }
+        Assert.NotNull(last);
+        Assert.True(last!.NewSession, "re-feed must reset the session");
+        // The next frame measures against the new baseline (height 60).
+        var next = analyzer.Analyze(new LevelMeasurement(t0.AddMinutes(60), 135, 0, 200));
+        Assert.False(next.NewSession);
+        Assert.Equal(8.3, next.RisePercent, precision: 1);
+    }
+
+    [Fact]
+    public void Analyze_FlatLagPhaseNeverFlagsPeaked()
+    {
+        // Degenerate-fit case observed live: a flat 6.6% lag phase fits a sigmoid with
+        // plateau ≈ current value perfectly — the "Peaked" sensor must stay off.
+        var analyzer = NewAnalyzer();
+        var t0 = new DateTimeOffset(2026, 10, 1, 7, 15, 0, TimeSpan.Zero);
+        analyzer.Analyze(new LevelMeasurement(t0, 100, 0, 200));
+        var readings = new List<RiseReading>();
+        for (var i = 1; i <= 14; i++)
+        {
+            readings.Add(analyzer.Analyze(new LevelMeasurement(t0.AddMinutes(5 * i), 93.4, 0, 200)));
+        }
+        Assert.All(readings, r => Assert.False(r.Peaked));
+    }
+
+    private static RiseAnalyzer NewAnalyzer() => new(new AnalysisOptions
+    {
+        SlopeWindowMinutes = 40,
+        ResetDropFraction = 0.25,
+        MinSamplesForFit = 3,
+        MaxEtaRelativeStdError = 0.15,
+        PeakConfirmWindows = 3,
+        MaxSessionHours = 36,
+        StateFilePath = null
+    });
 }

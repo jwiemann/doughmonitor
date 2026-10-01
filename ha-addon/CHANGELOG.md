@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.39
+
+- Front-edge surface rule: through the cylindrical glass the dough's BACK edge appears
+  higher than the front — the row-median crossed there and put the surface line on the
+  jar's back side (observed after a re-feed: red line at 445 vs. true front level ~575).
+  The surface is now the first row where ≥ `FrontEdgeCoverageFraction` (0.85) of the
+  jar-interior width is dough (warm or dark), sustained across the dough body; the jar
+  interior bounds come from the dough mask's own widest row so wall/shadow columns don't
+  cap the fraction.
+- Jar column works for a pale fresh-fed slurry too: the extent now uses warm OR dark
+  dough pixels over the dough's own row band (adaptive, instead of a fixed frame-height
+  zone that dilutes the fraction when the dough sits low), and frame-border columns are
+  hard-excluded from the extent.
+- Analyzer: a re-feed that drops the dough level far below the session baseline now resets
+  the session (the absolute height comparison catches what the 0%-clamped rise percent
+  hid); the "Peaked" flag requires the minimum observed rise on both the fitted-plateau
+  and the flat path (a degenerate fit on flat lag-phase data declared "peaked" at 6%);
+  degenerate fits (k < 0.05/h) are rejected and peak ETA hours are bounded, fixing an
+  ETA-timestamp overflow on flat series.
+
 ## 0.1.38
 
 - Auto-reset the rise session when the camera moves: the detector now persists the

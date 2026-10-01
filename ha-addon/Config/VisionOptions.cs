@@ -40,11 +40,6 @@ public sealed class VisionOptions
     /// jar-base shadow (~150) fails this; real dough (~105-131) passes.</summary>
     public double DarkBandMaxIntensity { get; init; } = 135.0;
 
-    /// <summary>Minimum length of a "genuinely dark" band as a fraction of the column
-    /// height. Real dough fills a substantial part of the jar; brief dark dips (jar base
-    /// shadow, lettering) do not.</summary>
-    public double MinDarkBandFraction { get; init; } = 0.2;
-
     /// <summary>Primary surface signal under ambient light: the dough is warm-toned
     /// (tan) while glass/wall/background are neutral. A warm band qualifies when its
     /// saturation exceeds the neutral glass reference by at least this step.
@@ -72,6 +67,18 @@ public sealed class VisionOptions
     /// Calibrated on real frames (0.55); the warm table strip below the jar stays far
     /// below it.</summary>
     public double WarmColumnMinFraction { get; init; } = 0.55;
+
+    /// <summary>Minimum length of a "genuinely dark" band as a fraction of the column
+    /// height. Real dough fills a substantial part of the jar; brief dark dips (jar base
+    /// shadow, lettering) do not.</summary>
+    public double MinDarkBandFraction { get; init; } = 0.2;
+
+    /// <summary>Front-edge rule: through the cylindrical jar glass the dough level at the
+    /// BACK wall appears higher than at the FRONT. The surface row is therefore the first
+    /// row where at least this fraction of the strip width is dough (warm or dark) — the
+    /// front-center level — instead of the row-median crossing, which flips at the back
+    /// edge. Calibrated on the real post-feeding frame (back edge 445, front edge ~575).</summary>
+    public double FrontEdgeCoverageFraction { get; init; } = 0.85;
 
     /// <summary>Persists the established warm-extent jar column (left/right px). On restart
     /// the detector seeds its window from it, so a camera move that happened while the

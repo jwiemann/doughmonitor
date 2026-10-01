@@ -180,6 +180,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             using var edges = AutoCanny(blurred, medianIntensity, 1.0);
             var warmColumn = FindJarColumnByWarmExtent(
                 imgColor,
+                img,
                 img.Width,
                 img.Height,
                 options.WarmColumnSaturationStep,
@@ -275,16 +276,19 @@ public sealed class JarLevelDetector(VisionOptions options)
         return new JarColumn(marginX, img.Width - marginX, marginY, img.Height - marginY, "fallback");
     }
 
-    /// <summary>Derives the jar column from the dough's warm horizontal extent. A column
-    /// belongs to the jar when a large fraction of its zone rows (mid-frame to lower frame)
-    /// is warm-toned; the extreme warm columns are the glass walls. Outside the jar the
-    /// neutral wall dominates the zone (the warm table strip stays a minority and its rows
-    /// below the zone bottom are cut). All steps are native OpenCV ops, so this costs
-    /// per frame. Note <see cref="ReduceDimension.Row"/> semantics: reduce to a
-    /// single ROW = per-column statistic (verified against live data — the inverse choice
-    /// produced row indices masquerading as column bounds).</summary>
+    /// <summary>Derives the jar column from the dough's horizontal extent, using BOTH dough
+    /// signals: warm tone (mature tan dough) OR darkness relative to the glass above (a
+    /// fresh-fed pale slurry has almost no saturation but is clearly darker than the empty
+    /// glass). A column belongs to the jar when a large fraction of its zone rows
+    /// (mid-frame to lower frame) is dough; the extreme columns of the longest warm/dark
+    /// run are the glass walls. Warm structures beside the jar (a cream-colored rack) are
+    /// excluded by the neutral wall gap; the dark door frame by its narrow run. Note
+    /// <see cref="ReduceDimension.Row"/> semantics: reduce to a single ROW = per-column
+    /// statistic (the inverse choice produced row indices masquerading as column
+    /// bounds).</summary>
     private JarColumn? FindJarColumnByWarmExtent(
         Mat color,
+        Mat gray,
         int frameWidth,
         int frameHeight,
         double warmColumnSaturationStep,
@@ -305,26 +309,63 @@ public sealed class JarLevelDetector(VisionOptions options)
         using var saturation = SaturationMap(color);
         if (saturation.Empty()) return null;
 
-        // Neutral reference: per-column mean over the top quarter (wall, door frame, empty
-        // glass — all neutral), then the median across columns. The jar's top region holds
-        // empty glass or is out of frame; both neutral.
-        using var topRows = saturation[new Rect(0, 0, frameWidth, neutralTop)];
-        using var topColMeans = new Mat();
-        Cv2.Reduce(topRows, topColMeans, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
-        if (!topColMeans.GetArray(out float[] topMeans) || topMeans.Length != frameWidth) return null;
-        var sortedTop = topMeans.OrderBy(v => v).ToArray();
-        var neutral = sortedTop.Length % 2 == 0
-            ? (sortedTop[sortedTop.Length / 2 - 1] + sortedTop[sortedTop.Length / 2]) / 2f
-            : sortedTop[sortedTop.Length / 2];
+        // Neutral references: per-column mean over the top quarter (wall, door frame, empty
+        // glass — bright and neutral), then the median across columns.
+        using var topSatRows = saturation[new Rect(0, 0, frameWidth, neutralTop)];
+        using var topSatMeans = new Mat();
+        Cv2.Reduce(topSatRows, topSatMeans, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
+        if (!topSatMeans.GetArray(out float[] topSat) || topSat.Length != frameWidth) return null;
+        var sortedSat = topSat.OrderBy(v => v).ToArray();
+        var satNeutral = sortedSat.Length % 2 == 0
+            ? (sortedSat[sortedSat.Length / 2 - 1] + sortedSat[sortedSat.Length / 2]) / 2f
+            : sortedSat[sortedSat.Length / 2];
 
-        // Warm mask, then per-column warm fraction over the dough zone. The fraction rule
-        // is robust against the neutral white reflection streaks running down the glass
-        // flanks, which dilute a plain column mean below acceptance.
+        using var topGrayRows = gray[new Rect(0, 0, frameWidth, neutralTop)];
+        using var topGrayMeans = new Mat();
+        Cv2.Reduce(topGrayRows, topGrayMeans, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
+        if (!topGrayMeans.GetArray(out float[] topGray) || topGray.Length != frameWidth) return null;
+        var sortedGray = topGray.OrderBy(v => v).ToArray();
+        var grayBright = sortedGray.Length % 2 == 0
+            ? (sortedGray[sortedGray.Length / 2 - 1] + sortedGray[sortedGray.Length / 2]) / 2f
+            : sortedGray[sortedGray.Length / 2];
+
+        // Dough mask = warm OR dark, then the dough's row band: the longest run of rows whose
+        // dough coverage is at least half the width. A fixed zone would dilute the column
+        // fractions whenever the dough sits low (fresh feed): most zone rows are empty
+        // glass, and a column's fraction drops below acceptance even though it is solidly
+        // dough across the actual band.
         using var warmMask = new Mat();
-        Cv2.Threshold(saturation, warmMask, neutral + warmColumnSaturationStep, 255, ThresholdTypes.Binary);
-        using var zoneMask = warmMask[new Rect(0, zoneTop, frameWidth, zoneBottom - zoneTop + 1)];
+        Cv2.Threshold(saturation, warmMask, satNeutral + warmColumnSaturationStep, 255, ThresholdTypes.Binary);
+        using var darkMask = new Mat();
+        Cv2.Threshold(gray, darkMask, grayBright - 18.0, 255, ThresholdTypes.BinaryInv);
+        using var doughMask = new Mat();
+        Cv2.Max(warmMask, darkMask, doughMask);
+        var rowCoverage = CoverageProfile(doughMask);
+        var bandTop = -1;
+        var bandBottom = -1;
+        var bandStart = -1;
+        var bestBand = 0;
+        var bandSearchStart = (int)(frameHeight * 0.35);
+        var bandSearchEnd = Math.Min(frameHeight - 1, (int)(frameHeight * 0.95));
+        for (var y = bandSearchStart; y <= bandSearchEnd + 1; y++)
+        {
+            var on = y <= bandSearchEnd && rowCoverage[y] >= 0.5;
+            if (on && bandStart < 0) bandStart = y;
+            if ((!on || y > bandSearchEnd) && bandStart >= 0)
+            {
+                if (y - bandStart > bestBand)
+                {
+                    bestBand = y - bandStart;
+                    bandTop = bandStart;
+                    bandBottom = y - 1;
+                }
+                bandStart = -1;
+            }
+        }
+        if (bandTop < 0 || bestBand < frameHeight * 0.05) return null;
+        using var bandMask = doughMask[new Rect(0, bandTop, frameWidth, bandBottom - bandTop + 1)];
         using var zoneColMeans = new Mat();
-        Cv2.Reduce(zoneMask, zoneColMeans, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
+        Cv2.Reduce(bandMask, zoneColMeans, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
         if (!zoneColMeans.GetArray(out float[] zoneMeans) || zoneMeans.Length != frameWidth) return null;
         var warmLine = warmColumnMinFraction * 255f;
         var warm = zoneMeans.Select(v => v >= warmLine).ToArray();
@@ -335,11 +376,13 @@ public sealed class JarLevelDetector(VisionOptions options)
         var smoothed = new bool[warm.Length];
         for (var x = 0; x < warm.Length; x++)
         {
+            // Border columns are hard-excluded: the door frames sit at x≈64/1216 and are
+            // dark at every row, so a neighbor rule would keep them in the run.
+            if (x < frameWidth * 0.06 || x > frameWidth * 0.94) continue;
             if (!warm[x]) continue;
             var leftNeighbor = x > 0 && warm[x - 1];
             var rightNeighbor = x < warm.Length - 1 && warm[x + 1];
-            var nearBorder = x < frameWidth * 0.06 || x > frameWidth * 0.94;
-            smoothed[x] = nearBorder ? leftNeighbor && rightNeighbor : leftNeighbor || rightNeighbor;
+            smoothed[x] = leftNeighbor || rightNeighbor;
         }
         // Longest contiguous warm run, not leftmost/rightmost overall: warm-looking
         // structures beside the jar (observed: a cream-colored metal rack right of the
@@ -721,10 +764,42 @@ public sealed class JarLevelDetector(VisionOptions options)
         // it covers less than half the strip width, which it reliably does.
         var rowIntensity = ReduceRowsMedian(centralStrip);
         var rowSaturation = ReduceRowsSaturationMedian(centralStripColor);
+        // Coverage profiles: per-row fraction of strip pixels that are dough (warm / dark).
+        // The row MEDIAN flips as soon as the dough's back edge (which appears higher
+        // through the cylindrical glass) covers half the strip — the front edge, where the
+        // dough reaches the front glass, is only visible as a coverage step. Computed over
+        // the jar interior (see InteriorBounds) so wall columns don't cap the fraction.
+        float[]? warmCoverage = null;
+        float[]? darkCoverage = null;
+        var satNeutral = NeutralReferenceLevel(MovingAverage(rowSaturation, 7));
+        if (satNeutral is { } satRef)
+        {
+            using var satMap = SaturationMap(centralStripColor);
+            using var warmMask = new Mat();
+            Cv2.Threshold(satMap, warmMask, satRef + options.MinWarmSaturationStep, 255, ThresholdTypes.Binary);
+            warmCoverage = CoverageProfile(warmMask);
+            if (InteriorBounds(warmMask, warmCoverage) is { } warmInterior)
+            {
+                warmCoverage = CoverageProfile(warmMask[new Rect(warmInterior.Left, 0, warmInterior.Right - warmInterior.Left + 1, warmMask.Rows)]);
+            }
+        }
+        var brightRef = BrightReferenceLevel(MovingAverage(rowIntensity, 7));
+        if (brightRef is { } bright)
+        {
+            using var darkMask = new Mat();
+            Cv2.Threshold(centralStrip, darkMask, bright - options.MinAmbientBandContrast, 255, ThresholdTypes.BinaryInv);
+            darkCoverage = CoverageProfile(darkMask);
+            if (InteriorBounds(darkMask, darkCoverage) is { } darkInterior)
+            {
+                darkCoverage = CoverageProfile(darkMask[new Rect(darkInterior.Left, 0, darkInterior.Right - darkInterior.Left + 1, darkMask.Rows)]);
+            }
+        }
         var result = FindDoughSurfaceCombined(
             rowEnergy,
             rowIntensity,
             rowSaturation,
+            warmCoverage,
+            darkCoverage,
             out var diagnostics,
             options.StrongBandContrast,
             options.MinAmbientBandContrast,
@@ -732,9 +807,67 @@ public sealed class JarLevelDetector(VisionOptions options)
             options.MinDarkBandFraction,
             options.MinWarmSaturationStep,
             options.StrongWarmSaturation,
-            options.MaxNeutralReferenceSaturation);
+            options.MaxNeutralReferenceSaturation,
+            options.FrontEdgeCoverageFraction);
         LastDiagnostics = WithFrameStats(diagnostics ?? new DetectionDiagnostics("none", 0, null, null), frameStats);
         return result;
+    }
+
+    /// <summary>Per-row fraction (0..1) of mask pixels, via a native average reduction of
+    /// the 0/255 mask. ReduceDimension.Column reduces to a single column = one value per
+    /// row (the Row direction would yield per-column values).</summary>
+    private static float[] CoverageProfile(Mat mask)
+    {
+        using var reduced = new Mat();
+        Cv2.Reduce(mask, reduced, ReduceDimension.Column, ReduceTypes.Avg, MatType.CV_32F);
+        reduced.GetArray(out float[] values);
+        for (var i = 0; i < values.Length; i++) values[i] /= 255f;
+        return values;
+    }
+
+    /// <summary>Jar-interior column bounds from a dough mask: the row with the highest
+    /// coverage is a dough-body row, and there the dough spans the full jar width — its
+    /// longest mask run is the interior. Used to recompute coverage without the neutral
+    /// wall columns of a fallback column, which would cap the front-edge fraction.</summary>
+    private static (int Left, int Right)? InteriorBounds(Mat mask, float[] coverage)
+    {
+        var rows = mask.Rows;
+        var cols = mask.Cols;
+        var searchStart = (int)(rows * 0.40);
+        var searchEnd = Math.Min(rows - 2, (int)(rows * 0.95));
+        if (searchEnd - searchStart < 5 || cols < 10) return null;
+        var bestRow = -1;
+        var bestCoverage = 0f;
+        for (var y = searchStart; y <= searchEnd; y++)
+        {
+            if (coverage[y] > bestCoverage)
+            {
+                bestCoverage = coverage[y];
+                bestRow = y;
+            }
+        }
+        if (bestRow < 0 || bestCoverage < 0.3f) return null;
+        var left = -1;
+        var right = -1;
+        var runStart = -1;
+        var bestRun = 0;
+        for (var x = 0; x <= cols; x++)
+        {
+            var on = x < cols && mask.Get<byte>(bestRow, x) > 0;
+            if (on && runStart < 0) runStart = x;
+            if (!on && runStart >= 0)
+            {
+                if (x - runStart > bestRun)
+                {
+                    bestRun = x - runStart;
+                    left = runStart;
+                    right = x - 1;
+                }
+                runStart = -1;
+            }
+        }
+        if (left < 0 || bestRun < cols * 0.3) return null;
+        return (left, right);
     }
 
     private static DetectionDiagnostics WithFrameStats(
@@ -843,6 +976,8 @@ public sealed class JarLevelDetector(VisionOptions options)
         IReadOnlyList<float> rowEnergy,
         IReadOnlyList<float> rowIntensity,
         IReadOnlyList<float> rowSaturation,
+        float[]? warmCoverage,
+        float[]? darkCoverage,
         out DetectionDiagnostics? diagnostics,
         double strongContrast,
         double minAmbientContrast,
@@ -850,8 +985,10 @@ public sealed class JarLevelDetector(VisionOptions options)
         double minDarkBandFraction,
         double minWarmSaturationStep,
         double strongWarmSaturation,
-        double maxNeutralReferenceSaturation)
+        double maxNeutralReferenceSaturation,
+        double frontEdgeCoverageFraction)
     {
+        var longRun = (int)Math.Ceiling(Math.Max(4, rowEnergy.Count * minDarkBandFraction));
         var warmTop = FindWarmBandTop(
             rowSaturation,
             out var warmContrast,
@@ -861,7 +998,11 @@ public sealed class JarLevelDetector(VisionOptions options)
             minDarkBandFraction);
         if (warmTop is not null)
         {
-            var snapped = SnapToEdge(rowEnergy, warmTop.Value);
+            // The median-based top is the jar's BACK edge (appears higher through the
+            // cylindrical glass); refine down to the front edge via warm coverage.
+            var front = RefineToFrontEdge(warmCoverage, warmTop.Value, longRun, frontEdgeCoverageFraction)
+                ?? warmTop.Value;
+            var snapped = SnapToEdge(rowEnergy, front);
             diagnostics = new DetectionDiagnostics("warm", warmContrast, warmTop, snapped);
             return snapped;
         }
@@ -876,13 +1017,43 @@ public sealed class JarLevelDetector(VisionOptions options)
         // a non-null result is already accepted.
         if (bandTop is not null)
         {
-            var snapped = SnapToEdge(rowEnergy, bandTop.Value);
+            var front = RefineToFrontEdge(darkCoverage, bandTop.Value, longRun, frontEdgeCoverageFraction)
+                ?? bandTop.Value;
+            var snapped = SnapToEdge(rowEnergy, front);
             diagnostics = new DetectionDiagnostics("band", bandContrast, bandTop, snapped);
             return snapped;
         }
         var edgeRow = FindDoughSurfaceFromEnergy(rowEnergy);
         diagnostics = new DetectionDiagnostics(edgeRow is null ? "none" : "edge", bandContrast, bandTop, edgeRow);
         return edgeRow;
+    }
+
+    /// <summary>Refines a back-edge band top down to the FRONT edge: the first row from
+    /// <paramref name="bandTop"/> onward where at least
+    /// <paramref name="frontEdgeCoverageFraction"/> of the jar-interior width is dough,
+    /// sustained for the dough-body length (dips from bubbles/droplets tolerated down to
+    /// 60 % of the threshold). Returns null when no coverage profile is available or no
+    /// sustained crossing exists — the caller keeps the back-edge top then.</summary>
+    private static int? RefineToFrontEdge(
+        float[]? coverage,
+        int bandTop,
+        int longRun,
+        double frontEdgeCoverageFraction)
+    {
+        if (coverage is null || coverage.Length == 0) return null;
+        var n = coverage.Length;
+        var cont = 0.6 * frontEdgeCoverageFraction;
+        for (var y = Math.Min(bandTop, n - 1); y < n; y++)
+        {
+            if (coverage[y] < frontEdgeCoverageFraction) continue;
+            var sustained = true;
+            for (var k = 1; k < longRun && y + k < n; k++)
+            {
+                if (coverage[y + k] < cont) { sustained = false; break; }
+            }
+            if (sustained) return y;
+        }
+        return null;
     }
 
     /// <summary>Snaps a band top to the strongest horizontal edge within a small window

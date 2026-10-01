@@ -86,7 +86,7 @@ public sealed class RiseAnalyzer
             return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true, SessionStart: _sessionStart);
         }
         var risePercent = (smoothedHeightPx - _baselineDoughHeightPx.Value) / _baselineDoughHeightPx.Value * 100.0;
-        if (IsCollapseReset(risePercent))
+        if (IsCollapseReset(risePercent, smoothedHeightPx))
         {
             // A single frame that looks like a collapse is exactly what a jar reappearing
             // after a detection gap (occlusion, glare while reacquiring) tends to produce:
@@ -156,9 +156,17 @@ public sealed class RiseAnalyzer
     private bool SessionExpired(DateTimeOffset now) =>
         _samples.Count > 0 && (now - _sessionStart).TotalHours > _options.MaxSessionHours;
 
-    private bool IsCollapseReset(double risePercent)
+    private bool IsCollapseReset(double risePercent, double smoothedHeightPx)
     {
         if (_samples.Count < 5) return false;
+        // Absolute height drop below the session-start level: a re-feed empties the jar
+        // below the baseline while the clamped rise percent hides it at 0% — and during a
+        // lag phase the rise-median guard below never passes. Compare heights directly.
+        if (_baselineDoughHeightPx is { } baseline
+            && smoothedHeightPx < baseline * (1 - _options.ResetDropFraction))
+        {
+            return true;
+        }
         var recentMedian = _samples.TakeLast(5)
             .Select(s => s.RisePercent)
             .Median();
@@ -185,11 +193,11 @@ public sealed class RiseAnalyzer
             .All(s => s.Slope <= _options.FlatSlopePercentPerHour);
         if (!flatOrFalling) return;
         var maxRise = _samples.Max(s => s.RisePercent);
-        // Prefer the fitted plateau (adapts to how far this particular starter actually
-        // rises); fall back to a flat minimum-rise gate only while no fit is available yet,
-        // so lag-phase noise is never mistaken for a peak.
-        var reachedFittedPlateau = fit is not null && maxRise >= fit.L * _options.PeakFraction;
-        _peaked = reachedFittedPlateau || maxRise >= _options.MinRisePercentForPeak;
+        // The minimum observed rise gates the flag itself — a fitted plateau cannot lower
+        // it: a degenerate fit on flat lag-phase data (plateau ≈ current value, relative
+        // error ≈ 0) would otherwise declare "peaked" at a 6% rise — observed live. The
+        // fit still drives the ETA/peak sensors via PredictedPeakPercent.
+        _peaked = maxRise >= _options.MinRisePercentForPeak;
     }
 
     private void ResetSession(DateTimeOffset start, double? baselinePx)

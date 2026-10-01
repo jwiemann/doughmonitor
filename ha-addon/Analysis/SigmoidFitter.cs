@@ -39,7 +39,9 @@ public static class SigmoidFitter
                 var result = NelderMeadSimplex.Minimum(objective, seed, 1e-8, 5000);
                 var p = result.MinimizingPoint;
                 var (l, k, t0) = (p[0], p[1], p[2]);
-                if (l <= 0 || k <= 0 || l > 500 || double.IsNaN(l) || double.IsNaN(k)) continue;
+                // k below 0.05/h means a >60h time constant: the "fit" is a flat line and
+                // its peak ETA is unbounded (HoursAtFraction explodes) — no information.
+                if (l <= 0 || k < 0.05 || l > 500 || double.IsNaN(l) || double.IsNaN(k)) continue;
                 var sse = SumSquaredError(p, t, h, maxH);
                 if (sse >= bestSse) continue;
                 bestSse = sse;
