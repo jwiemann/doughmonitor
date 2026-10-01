@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.40
+
+- Debug image now shows the dough filters: orange overlay = where the color filter (warm
+  tone) sees dough, light blue = where only the darkness filter does. The debug output was
+  a bare grayscale frame before, making every color-based decision invisible.
+- The warm method must now prove a warm BODY (mean warm coverage below the band top ≥
+  `FrontEdgeCoverageFraction`): a thin warm glare line over a pale slurry no longer wins
+  over the stable band method — this was flipping the surface by 30-90 px on the real
+  post-feeding frames.
+- Shared top-quarter neutral-reference helper for the column extent and the debug masks.
+
 ## 0.1.39
 
 - Front-edge surface rule: through the cylindrical glass the dough's BACK edge appears

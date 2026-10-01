@@ -154,18 +154,30 @@ public sealed class JarLevelDetector(VisionOptions options)
             LastOutcome = "dark_frame";
             LastDiagnostics = WithFrameStats(new DetectionDiagnostics("dark", 0, null, null), frameStats);
             if (options.DebugSaveAnnotatedImages)
-                SaveDebugImage(img, null, null, null, null, now);
+                SaveDebugImage(img, null, null, null, null, now, null, null);
             return null;
         }
         using var blurred = new Mat();
         Cv2.GaussianBlur(img, blurred, new Size(5, 5), 0);
+        // Visualization masks for the debug image: where the color filter (warm tone)
+        // and the darkness filter see dough. Painted translucently so the debug output
+        // shows what the filters actually see instead of a bare grayscale frame.
+        ComputeTopQuarterRefs(imgColor, img, out var visSatNeutral, out var visGrayBright);
+        using var visWarm = new Mat();
+        Cv2.Threshold(SaturationMap(imgColor), visWarm, visSatNeutral + options.MinWarmSaturationStep, 255, ThresholdTypes.Binary);
+        using var visDark = new Mat();
+        Cv2.Threshold(img, visDark, visGrayBright - options.MinAmbientBandContrast, 255, ThresholdTypes.BinaryInv);
+        using var visDarkOnly = new Mat();
+        using var visNotWarm = new Mat();
+        Cv2.BitwiseNot(visWarm, visNotWarm);
+        Cv2.BitwiseAnd(visDark, visNotWarm, visDarkOnly);
         // Pass 1: wall-based detection at two Canny relaxation levels.
         foreach (var relaxation in new[] { 1.0, 0.6 })
         {
             using var edges = AutoCanny(blurred, medianIntensity, relaxation);
             var jarColumn = FindJarColumn(edges, img.Width, img.Height, relaxation);
             if (jarColumn is null) continue;
-            var measurement = MeasureWithinColumn(edges, img, imgColor, jarColumn, now, frameStats, sessionBaselineHeightPx);
+            var measurement = MeasureWithinColumn(edges, img, imgColor, jarColumn, now, frameStats, sessionBaselineHeightPx, visWarm, visDarkOnly);
             if (measurement is not null)
             {
                 LastOutcome = "detected";
@@ -187,7 +199,7 @@ public sealed class JarLevelDetector(VisionOptions options)
                 options.WarmColumnMinFraction);
             if (warmColumn is not null)
             {
-                var measurement = MeasureWithinColumn(edges, img, imgColor, warmColumn, now, frameStats, sessionBaselineHeightPx);
+                var measurement = MeasureWithinColumn(edges, img, imgColor, warmColumn, now, frameStats, sessionBaselineHeightPx, visWarm, visDarkOnly);
                 if (measurement is not null)
                 {
                     LastOutcome = "detected";
@@ -205,7 +217,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         {
             using var edges = AutoCanny(blurred, medianIntensity, relaxation);
             var fallbackColumn = BuildFallbackColumn(img);
-            var measurement = MeasureWithinColumn(edges, img, imgColor, fallbackColumn, now, frameStats, sessionBaselineHeightPx);
+            var measurement = MeasureWithinColumn(edges, img, imgColor, fallbackColumn, now, frameStats, sessionBaselineHeightPx, visWarm, visDarkOnly);
             if (measurement is not null)
             {
                 LastOutcome = "detected";
@@ -215,7 +227,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         LastOutcome = "no_surface";
         LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
         if (options.DebugSaveAnnotatedImages)
-            SaveDebugImage(img, null, null, null, null, now);
+            SaveDebugImage(img, null, null, null, null, now, visWarm, visDarkOnly);
         return null;
     }
 
@@ -226,7 +238,9 @@ public sealed class JarLevelDetector(VisionOptions options)
         JarColumn jarColumn,
         DateTimeOffset now,
         (double? Mean, double? Median, double? P10, double? P90) frameStats,
-        double? sessionBaselineHeightPx)
+        double? sessionBaselineHeightPx,
+        Mat? visWarm,
+        Mat? visDarkOnly)
     {
         var inset = Math.Max(3, (jarColumn.Right - jarColumn.Left) / 10);
         var rect = new Rect(
@@ -248,7 +262,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         var doughTop = FindDoughSurface(columnEdges, columnGray, columnColor, frameStats);
         if (doughTop is null)
         {
-            SaveDebugImage(gray, jarColumn, null, null, null, now);
+            SaveDebugImage(gray, jarColumn, null, null, null, now, visWarm, visDarkOnly);
             return null;
         }
         var jarBottom = FindJarBottom(columnEdges, columnGray, doughTop.Value, rect.Height - 1);
@@ -263,7 +277,9 @@ public sealed class JarLevelDetector(VisionOptions options)
             jarColumn.Top + doughTop.Value,
             jarColumn.Top + jarBottom,
             sessionStartSurfaceY,
-            now);
+            now,
+            visWarm,
+            visDarkOnly);
         return new LevelMeasurement(now, jarColumn.Top + doughTop.Value, jarColumn.Top, jarColumn.Top + jarBottom);
     }
 
@@ -279,10 +295,10 @@ public sealed class JarLevelDetector(VisionOptions options)
     /// <summary>Derives the jar column from the dough's horizontal extent, using BOTH dough
     /// signals: warm tone (mature tan dough) OR darkness relative to the glass above (a
     /// fresh-fed pale slurry has almost no saturation but is clearly darker than the empty
-    /// glass). A column belongs to the jar when a large fraction of its zone rows
-    /// (mid-frame to lower frame) is dough; the extreme columns of the longest warm/dark
-    /// run are the glass walls. Warm structures beside the jar (a cream-colored rack) are
-    /// excluded by the neutral wall gap; the dark door frame by its narrow run. Note
+    /// glass). A column belongs to the jar when a large fraction of its dough-band rows is
+    /// dough; the extreme columns of the longest warm/dark run are the glass walls. Warm
+    /// structures beside the jar (a cream-colored rack) are excluded by the neutral wall
+    /// gap; the dark door frame by the hard border-column exclusion. Note
     /// <see cref="ReduceDimension.Row"/> semantics: reduce to a single ROW = per-column
     /// statistic (the inverse choice produced row indices masquerading as column
     /// bounds).</summary>
@@ -294,10 +310,6 @@ public sealed class JarLevelDetector(VisionOptions options)
         double warmColumnSaturationStep,
         double warmColumnMinFraction)
     {
-        var zoneTop = (int)(frameHeight * 0.50);
-        var zoneBottom = Math.Min(frameHeight - 1, (int)(frameHeight * 0.92));
-        var neutralTop = Math.Max(1, (int)(frameHeight * 0.25));
-        if (zoneBottom - zoneTop < 10 || neutralTop >= zoneTop) return null;
         // Seed once from the persisted column so a camera move made while the add-on was
         // down is caught by the same disagreement logic as a live bump. The seed ages out
         // of the window after WarmColumnHistorySize frames.
@@ -306,28 +318,9 @@ public sealed class JarLevelDetector(VisionOptions options)
             _geometrySeeded = true;
             if (_persistedGeometry is { } seededColumn) _recentWarmColumns.Enqueue(seededColumn);
         }
+        ComputeTopQuarterRefs(color, gray, out var satNeutral, out var grayBright);
         using var saturation = SaturationMap(color);
         if (saturation.Empty()) return null;
-
-        // Neutral references: per-column mean over the top quarter (wall, door frame, empty
-        // glass — bright and neutral), then the median across columns.
-        using var topSatRows = saturation[new Rect(0, 0, frameWidth, neutralTop)];
-        using var topSatMeans = new Mat();
-        Cv2.Reduce(topSatRows, topSatMeans, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
-        if (!topSatMeans.GetArray(out float[] topSat) || topSat.Length != frameWidth) return null;
-        var sortedSat = topSat.OrderBy(v => v).ToArray();
-        var satNeutral = sortedSat.Length % 2 == 0
-            ? (sortedSat[sortedSat.Length / 2 - 1] + sortedSat[sortedSat.Length / 2]) / 2f
-            : sortedSat[sortedSat.Length / 2];
-
-        using var topGrayRows = gray[new Rect(0, 0, frameWidth, neutralTop)];
-        using var topGrayMeans = new Mat();
-        Cv2.Reduce(topGrayRows, topGrayMeans, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
-        if (!topGrayMeans.GetArray(out float[] topGray) || topGray.Length != frameWidth) return null;
-        var sortedGray = topGray.OrderBy(v => v).ToArray();
-        var grayBright = sortedGray.Length % 2 == 0
-            ? (sortedGray[sortedGray.Length / 2 - 1] + sortedGray[sortedGray.Length / 2]) / 2f
-            : sortedGray[sortedGray.Length / 2];
 
         // Dough mask = warm OR dark, then the dough's row band: the longest run of rows whose
         // dough coverage is at least half the width. A fixed zone would dilute the column
@@ -477,6 +470,34 @@ public sealed class JarLevelDetector(VisionOptions options)
         return bestCount > 0 ? (bestSum + bestCount / 2) / bestCount : 0;
     }
 
+    /// <summary>Neutral references from the frame's top quarter (wall, door frame, empty
+    /// glass — bright and colorless): the medians across columns of the per-column mean
+    /// saturation and gray intensity. Shared by the column-extent derivation and the
+    /// debug visualization masks.</summary>
+    private static void ComputeTopQuarterRefs(Mat color, Mat gray, out double satNeutral, out double grayBright)
+    {
+        var neutralTop = Math.Max(1, (int)(color.Height * 0.25));
+        using var satMap = SaturationMap(color);
+        using var topSat = satMap[new Rect(0, 0, color.Width, neutralTop)];
+        using var redSat = new Mat();
+        Cv2.Reduce(topSat, redSat, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
+        redSat.GetArray(out float[] satMeans);
+        satNeutral = Median(satMeans);
+        using var topGray = gray[new Rect(0, 0, gray.Width, neutralTop)];
+        using var redGray = new Mat();
+        Cv2.Reduce(topGray, redGray, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
+        redGray.GetArray(out float[] grayMeans);
+        grayBright = Median(grayMeans);
+    }
+
+    private static double Median(float[] values)
+    {
+        var sorted = values.OrderBy(v => v).ToArray();
+        return sorted.Length % 2 == 0
+            ? (sorted[sorted.Length / 2 - 1] + sorted[sorted.Length / 2]) / 2f
+            : sorted[sorted.Length / 2];
+    }
+
     /// <summary>BGR channel spread (max − min) as a single-channel saturation proxy,
     /// computed with native OpenCV ops.</summary>
     private static Mat SaturationMap(Mat color)
@@ -612,11 +633,24 @@ public sealed class JarLevelDetector(VisionOptions options)
         int? doughSurfaceY,
         int? jarBottomY,
         int? sessionStartSurfaceY,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        Mat? visWarm,
+        Mat? visDarkOnly)
     {
         LastDebugImagePath = null;
         using var color = new Mat();
         Cv2.CvtColor(image, color, ColorConversionCodes.GRAY2BGR);
+        // Show what the filters see: orange = the color filter (warm tone) marks dough,
+        // light blue = only the darkness filter does. Without this the debug image is a
+        // bare grayscale frame and the color-based decisions are invisible.
+        if (visWarm is not null && visDarkOnly is not null)
+        {
+            using var original = color.Clone();
+            using var overlay = color.Clone();
+            overlay.SetTo(new Scalar(0, 165, 255), visWarm);
+            overlay.SetTo(new Scalar(255, 160, 0), visDarkOnly);
+            Cv2.AddWeighted(original, 0.55, overlay, 0.45, 0, color);
+        }
         if (jarColumn is not null)
         {
             // Green = verified jar bounds (Hough walls or warm extent). Orange = fallback
@@ -996,7 +1030,8 @@ public sealed class JarLevelDetector(VisionOptions options)
             strongWarmSaturation,
             maxNeutralReferenceSaturation,
             minDarkBandFraction);
-        if (warmTop is not null)
+        if (warmTop is not null
+            && MeanCoverage(warmCoverage, warmTop.Value, longRun) >= frontEdgeCoverageFraction)
         {
             // The median-based top is the jar's BACK edge (appears higher through the
             // cylindrical glass); refine down to the front edge via warm coverage.
@@ -1026,6 +1061,20 @@ public sealed class JarLevelDetector(VisionOptions options)
         var edgeRow = FindDoughSurfaceFromEnergy(rowEnergy);
         diagnostics = new DetectionDiagnostics(edgeRow is null ? "none" : "edge", bandContrast, bandTop, edgeRow);
         return edgeRow;
+    }
+
+    /// <summary>Mean coverage over [start .. start+length) (clamped to the profile). A warm
+    /// band top only counts as dough when the body BELOW it is also warm — a thin warm
+    /// glare line over a pale slurry has no warm body and must not win over the band
+    /// method.</summary>
+    private static double MeanCoverage(float[]? coverage, int start, int length)
+    {
+        if (coverage is null || coverage.Length == 0) return 1.0;
+        var from = Math.Max(0, Math.Min(start, coverage.Length - 1));
+        var to = Math.Min(coverage.Length, from + Math.Max(1, length));
+        double sum = 0;
+        for (var y = from; y < to; y++) sum += coverage[y];
+        return sum / (to - from);
     }
 
     /// <summary>Refines a back-edge band top down to the FRONT edge: the first row from
