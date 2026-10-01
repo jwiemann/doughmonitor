@@ -1056,6 +1056,13 @@ public sealed class JarLevelDetector(VisionOptions options)
         double frontEdgeCoverageFraction)
     {
         var longRun = (int)Math.Ceiling(Math.Max(4, rowEnergy.Count * minDarkBandFraction));
+        var bandTop = FindDoughBandTop(
+            rowIntensity,
+            out var bandContrast,
+            strongContrast,
+            minAmbientContrast,
+            darkBandMaxIntensity,
+            minDarkBandFraction);
         var warmTop = FindWarmBandTop(
             rowSaturation,
             out var warmContrast,
@@ -1063,15 +1070,19 @@ public sealed class JarLevelDetector(VisionOptions options)
             strongWarmSaturation,
             maxNeutralReferenceSaturation,
             minDarkBandFraction);
-        if (warmTop is not null
-            && MeanCoverage(warmCoverage, warmTop.Value, longRun) >= frontEdgeCoverageFraction)
+        // The warm top is only trusted when it does not start DEEPER than the dark band
+        // top: dough whose upper layer is dark-but-not-warm (wet, freshly fed) makes the
+        // warm median run begin inside the dough — observed live (warm 576 vs dark 477).
+        var warmTrusted = warmTop is not null
+            && MeanCoverage(warmCoverage, warmTop.Value, longRun) >= frontEdgeCoverageFraction
+            && (bandTop is null || warmTop.Value <= bandTop.Value + Math.Max(10, rowEnergy.Count * 2 / 100));
+        if (warmTrusted)
         {
             // The median-based top is the jar's BACK edge (appears higher through the
             // cylindrical glass); refine down to the front edge. The dark coverage is the
             // universal front-edge signal — the dough is darker than the glass in every
-            // state (tan, pale, backlit). When the dark coverage cannot reach the
-            // front-edge fraction on this frame, fall through to the band path instead of
-            // reporting the back edge (those readings only clog the plausibility gate).
+            // state (tan, pale, backlit). No crossing on this frame: fall through to the
+            // band path instead of reporting the back edge.
             var warmFront = RefineToFrontEdge(darkCoverage, warmTop.Value, longRun, frontEdgeCoverageFraction);
             if (warmFront is not null)
             {
@@ -1080,13 +1091,6 @@ public sealed class JarLevelDetector(VisionOptions options)
                 return snapped;
             }
         }
-        var bandTop = FindDoughBandTop(
-            rowIntensity,
-            out var bandContrast,
-            strongContrast,
-            minAmbientContrast,
-            darkBandMaxIntensity,
-            minDarkBandFraction);
         // Qualification (contrast + darkness + length rules) lives in FindDoughBandTop;
         // a non-null result is already accepted.
         if (bandTop is not null)
@@ -1097,9 +1101,18 @@ public sealed class JarLevelDetector(VisionOptions options)
             diagnostics = new DetectionDiagnostics("band", bandContrast, bandTop, snapped);
             return snapped;
         }
+        // Edge fallback: the strongest edge row must sit on actual dough — a dark/warm
+        // coverage floor rejects condensation-line or glare edges high above the dough
+        // (observed live: the droplet boundary at row 377 while the dough starts at 470).
         var edgeRow = FindDoughSurfaceFromEnergy(rowEnergy);
-        diagnostics = new DetectionDiagnostics(edgeRow is null ? "none" : "edge", bandContrast, bandTop, edgeRow);
-        return edgeRow;
+        var edgeSupported = edgeRow is not null
+            && MeanCoverage(darkCoverage, edgeRow.Value, Math.Max(8, longRun / 4)) >= 0.4;
+        diagnostics = new DetectionDiagnostics(
+            edgeSupported ? "edge" : "none",
+            bandContrast,
+            bandTop,
+            edgeSupported ? edgeRow : null);
+        return edgeSupported ? edgeRow : null;
     }
 
     /// <summary>Mean coverage over [start .. start+length) (clamped to the profile). A warm
