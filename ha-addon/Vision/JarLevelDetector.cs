@@ -44,14 +44,20 @@ public sealed class JarLevelDetector(VisionOptions options)
     /// starting point stays visible even as the dough rises.</summary>
     public LevelMeasurement? Measure(byte[] jpegBytes, DateTimeOffset now, double? sessionBaselineHeightPx = null)
     {
-        using var raw = Cv2.ImDecode(jpegBytes, ImreadModes.Grayscale);
-        if (raw.Empty())
+        // Color decode: the dough is warm-toned (tan) while glass/wall/background are
+        // neutral — the saturation step is the most stable surface signal under ambient
+        // light (a fresh-fed light dough shows almost no brightness step at all).
+        using var rawColor = Cv2.ImDecode(jpegBytes, ImreadModes.Color);
+        if (rawColor.Empty())
         {
             LastOutcome = "decode_failed";
             LastDiagnostics = new DetectionDiagnostics("decode_failed", 0, null, null);
             return null;
         }
-        using var img = ApplyConfiguredRoi(raw);
+        using var rawGray = new Mat();
+        Cv2.CvtColor(rawColor, rawGray, ColorConversionCodes.BGR2GRAY);
+        using var img = ApplyConfiguredRoi(rawGray);
+        using var imgColor = ApplyConfiguredRoi(rawColor);
         // Intensity statistics computed once per frame: Canny thresholds and the
         // dark-frame gate share them.
         var (medianIntensity, p10, p90) = ComputeIntensityStats(img);
@@ -77,7 +83,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             using var edges = AutoCanny(blurred, medianIntensity, relaxation);
             var jarColumn = FindJarColumn(edges, img.Width, img.Height, relaxation);
             if (jarColumn is null) continue;
-            var measurement = MeasureWithinColumn(edges, img, jarColumn, now, frameStats, sessionBaselineHeightPx);
+            var measurement = MeasureWithinColumn(edges, img, imgColor, jarColumn, now, frameStats, sessionBaselineHeightPx);
             if (measurement is not null)
             {
                 LastOutcome = "detected";
@@ -90,7 +96,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         {
             using var edges = AutoCanny(blurred, medianIntensity, relaxation);
             var fallbackColumn = BuildFallbackColumn(img);
-            var measurement = MeasureWithinColumn(edges, img, fallbackColumn, now, frameStats, sessionBaselineHeightPx);
+            var measurement = MeasureWithinColumn(edges, img, imgColor, fallbackColumn, now, frameStats, sessionBaselineHeightPx);
             if (measurement is not null)
             {
                 LastOutcome = "detected";
@@ -107,6 +113,7 @@ public sealed class JarLevelDetector(VisionOptions options)
     private LevelMeasurement? MeasureWithinColumn(
         Mat edges,
         Mat gray,
+        Mat color,
         JarColumn jarColumn,
         DateTimeOffset now,
         (double? Mean, double? Median, double? P10, double? P90) frameStats,
@@ -125,7 +132,8 @@ public sealed class JarLevelDetector(VisionOptions options)
         }
         using var columnEdges = edges[rect];
         using var columnGray = gray[rect];
-        var doughTop = FindDoughSurface(columnEdges, columnGray, frameStats);
+        using var columnColor = color[rect];
+        var doughTop = FindDoughSurface(columnEdges, columnGray, columnColor, frameStats);
         if (doughTop is null)
         {
             SaveDebugImage(gray, jarColumn, null, null, null, now);
@@ -229,6 +237,12 @@ public sealed class JarLevelDetector(VisionOptions options)
                 return dy > 0 && dx <= Math.Max(4, dy * 0.09);
             })
             .Select(l => new WallLine((l.P1.X + l.P2.X) / 2, Math.Min(l.P1.Y, l.P2.Y), Math.Max(l.P1.Y, l.P2.Y)))
+            // Lines hugging the frame border are almost always image-edge artifacts (door
+            // frames, vignetting), not jar walls: observed at x≈64/1280 and x≈1216/1280 on a
+            // real frame while the actual glass walls had too little contrast for Hough.
+            // Rejecting them lets the full-frame fallback column take over, which profiles
+            // the jar interior correctly.
+            .Where(l => l.X > frameWidth * 0.06 && l.X < frameWidth * 0.94)
             .OrderBy(l => l.X)
             .ToArray();
         if (verticals.Length < 2) return null;
@@ -388,6 +402,7 @@ public sealed class JarLevelDetector(VisionOptions options)
     private int? FindDoughSurface(
         Mat columnEdges,
         Mat columnGray,
+        Mat columnColor,
         (double? Mean, double? Median, double? P10, double? P90) frameStats)
     {
         var rowEnergy = ReduceRows(columnEdges);
@@ -396,7 +411,9 @@ public sealed class JarLevelDetector(VisionOptions options)
         // sides would otherwise lift the row means and hide the dough band.
         var stripX = columnGray.Width / 4;
         var stripWidth = Math.Max(1, columnGray.Width / 2);
-        using var centralStrip = columnGray[new Rect(stripX, 0, stripWidth, columnGray.Height)];
+        var stripRect = new Rect(stripX, 0, stripWidth, columnGray.Height);
+        using var centralStrip = columnGray[stripRect];
+        using var centralStripColor = columnColor[stripRect];
         // Row median rather than row mean: IR illumination commonly puts a narrow, very
         // bright specular hot spot or condensation glare through the center of the jar. A
         // mean pulls the whole row toward that hot spot even though it covers only a
@@ -404,7 +421,19 @@ public sealed class JarLevelDetector(VisionOptions options)
         // glare instead of down to the real dough surface. The median ignores it as long as
         // it covers less than half the strip width, which it reliably does.
         var rowIntensity = ReduceRowsMedian(centralStrip);
-        var result = FindDoughSurfaceCombined(rowEnergy, rowIntensity, out var diagnostics);
+        var rowSaturation = ReduceRowsSaturationMedian(centralStripColor);
+        var result = FindDoughSurfaceCombined(
+            rowEnergy,
+            rowIntensity,
+            rowSaturation,
+            out var diagnostics,
+            options.StrongBandContrast,
+            options.MinAmbientBandContrast,
+            options.DarkBandMaxIntensity,
+            options.MinDarkBandFraction,
+            options.MinWarmSaturationStep,
+            options.StrongWarmSaturation,
+            options.MaxNeutralReferenceSaturation);
         LastDiagnostics = WithFrameStats(diagnostics ?? new DetectionDiagnostics("none", 0, null, null), frameStats);
         return result;
     }
@@ -502,125 +531,255 @@ public sealed class JarLevelDetector(VisionOptions options)
             measurement.JarBottomPx + roiY);
     }
 
-    /// <summary>Hybrid dough surface detection. Opaque dough in a backlit transparent container
-    /// forms a dark sustained band in the column intensity profile with a bright region directly
-    /// above it (light through glass). The band's top edge is the dough surface. This is far more
-    /// reliable than edge energy, which also fires on embossed lettering, glare edges and dried
-    /// residue on the glass. When a qualifying band exists, its top wins and is refined to the
-    /// nearest edge peak. Otherwise (diffuse lighting, boxes) the edge-energy method is used.</summary>
-    public static int? FindDoughSurfaceCombined(IReadOnlyList<float> rowEnergy, IReadOnlyList<float> rowIntensity) =>
-        FindDoughSurfaceCombined(rowEnergy, rowIntensity, out _);
-
+    /// <summary>Hybrid dough surface detection, in order of evidence strength:
+    /// 1. "warm" — the saturation step (dough is warm-toned, glass/wall neutral). Most
+    ///    stable under ambient light, including a fresh-fed light dough that shows almost
+    ///    no brightness step. Validated on real frames: glass sat 2-5, dough sat 25-32.
+    /// 2. "band" — the dark-band brightness step relative to the bright glass above
+    ///    (strong backlit step, or genuinely dark long band).
+    /// 3. "edge" — horizontal edge energy fallback (diffuse-lit boxes).
+    /// Every accepted band top is snapped to the strongest horizontal edge within a small
+    /// window for pixel precision when one stands out.</summary>
     private static int? FindDoughSurfaceCombined(
         IReadOnlyList<float> rowEnergy,
         IReadOnlyList<float> rowIntensity,
-        out DetectionDiagnostics? diagnostics)
+        IReadOnlyList<float> rowSaturation,
+        out DetectionDiagnostics? diagnostics,
+        double strongContrast,
+        double minAmbientContrast,
+        double darkBandMaxIntensity,
+        double minDarkBandFraction,
+        double minWarmSaturationStep,
+        double strongWarmSaturation,
+        double maxNeutralReferenceSaturation)
     {
-        var bandTop = FindDoughBandTop(rowIntensity, out var bandContrast);
-        if (bandTop is not null && bandContrast >= MinStepContrast)
+        var warmTop = FindWarmBandTop(
+            rowSaturation,
+            out var warmContrast,
+            minWarmSaturationStep,
+            strongWarmSaturation,
+            maxNeutralReferenceSaturation,
+            minDarkBandFraction);
+        if (warmTop is not null)
         {
-            // Snap to the strongest horizontal edge within a small window around the band top
-            // for pixel precision; keep the band-top row if no edge stands out there.
-            var window = Math.Max(3, rowEnergy.Count * 3 / 100);
-            var from = Math.Max(0, bandTop.Value - window);
-            var to = Math.Min(rowEnergy.Count - 1, bandTop.Value + window);
-            var bestRow = bandTop.Value;
-            var bestEnergy = 0f;
-            for (var y = from; y <= to; y++)
-            {
-                if (rowEnergy[y] > bestEnergy)
-                {
-                    bestEnergy = rowEnergy[y];
-                    bestRow = y;
-                }
-            }
-            diagnostics = new DetectionDiagnostics("band", bandContrast, bandTop, bestRow);
-            return bestRow;
+            var snapped = SnapToEdge(rowEnergy, warmTop.Value);
+            diagnostics = new DetectionDiagnostics("warm", warmContrast, warmTop, snapped);
+            return snapped;
+        }
+        var bandTop = FindDoughBandTop(
+            rowIntensity,
+            out var bandContrast,
+            strongContrast,
+            minAmbientContrast,
+            darkBandMaxIntensity,
+            minDarkBandFraction);
+        // Qualification (contrast + darkness + length rules) lives in FindDoughBandTop;
+        // a non-null result is already accepted.
+        if (bandTop is not null)
+        {
+            var snapped = SnapToEdge(rowEnergy, bandTop.Value);
+            diagnostics = new DetectionDiagnostics("band", bandContrast, bandTop, snapped);
+            return snapped;
         }
         var edgeRow = FindDoughSurfaceFromEnergy(rowEnergy);
         diagnostics = new DetectionDiagnostics(edgeRow is null ? "none" : "edge", bandContrast, bandTop, edgeRow);
         return edgeRow;
     }
 
-    /// <summary>Finds the top edge of the dough band in the row intensity profile.
-    /// All sustained dark runs are enumerated; the dough band is the one with the strongest
-    /// contrast between the region directly above it and its own interior — backlit glass
-    /// above dough produces a massive bright-to-dark transition, while other dark regions
-    /// (shadow strip below the jar base, dark table edge) have dark or dim regions above
-    /// them and therefore weak above-contrast. Returns null when no run qualifies; the out
-    /// parameter reports the winning run's above-contrast.</summary>
-    public static int? FindDoughBandTop(IReadOnlyList<float> rowIntensity, out double contrast)
+    /// <summary>Snaps a band top to the strongest horizontal edge within a small window
+    /// around it for pixel precision; returns the band top itself when no edge stands out.</summary>
+    private static int SnapToEdge(IReadOnlyList<float> rowEnergy, int bandTop)
+    {
+        var window = Math.Max(3, rowEnergy.Count * 3 / 100);
+        var from = Math.Max(0, bandTop - window);
+        var to = Math.Min(rowEnergy.Count - 1, bandTop + window);
+        var bestRow = bandTop;
+        var bestEnergy = 0f;
+        for (var y = from; y <= to; y++)
+        {
+            if (rowEnergy[y] > bestEnergy)
+            {
+                bestEnergy = rowEnergy[y];
+                bestRow = y;
+            }
+        }
+        return bestRow;
+    }
+
+    /// <summary>Finds the dough surface via the warm-tone step: sourdough is tan (the
+    /// red/blue channel spread is large) while glass, wall and background are neutral.
+    /// The reference level is the modal saturation of the profile's top quarter (the glass
+    /// above the dough). The surface is the topmost row whose saturation rises
+    /// persistently above (neutral + step) — a long warm band qualifies at the weaker
+    /// step, a short one only at the strong step (real dough measured: sat 25-32 vs glass
+    /// 2-5). Inverted geometry compared to the dark-band search: here we look for warm
+    /// runs, and the neutral dip below the jar bottom breaks the run naturally.</summary>
+    public static int? FindWarmBandTop(
+        IReadOnlyList<float> rowSaturation,
+        out double contrast,
+        double minWarmStep = 12.0,
+        double strongWarmStep = 22.0,
+        double maxNeutralReferenceSaturation = 10.0,
+        double minWarmBandFraction = 0.2)
+    {
+        contrast = 0;
+        if (rowSaturation.Count < 10) return null;
+        var smoothed = MovingAverage(rowSaturation, 7);
+        var n = smoothed.Length;
+        var searchStart = Math.Max(1, (int)(n * 0.05));
+        if (searchStart >= n - 5) return null;
+        var neutral = NeutralReferenceLevel(smoothed);
+        if (neutral is null || neutral > maxNeutralReferenceSaturation) return null;
+        var line = neutral.Value + minWarmStep;
+        var minRun = Math.Max(3, n / 60);
+        var longRun = (int)Math.Ceiling(Math.Max(4, n * minWarmBandFraction));
+        var insideWindow = Math.Max(4, n / 5);
+        for (var y = searchStart; y < n; y++)
+        {
+            if (smoothed[y] < line) continue;
+            var end = y + 1;
+            while (end < n && smoothed[end] >= line) end++;
+            var runLength = end - y;
+            if (runLength < minRun) continue;
+            var insideEnd = Math.Min(end, y + insideWindow);
+            double insideSum = 0;
+            for (var row = y; row < insideEnd; row++) insideSum += smoothed[row];
+            var insideMean = insideSum / (insideEnd - y);
+            var step = insideMean - neutral.Value;
+            if (runLength < longRun && step < strongWarmStep) continue;
+            contrast = step;
+            return y;
+        }
+        return null;
+    }
+
+    /// <summary>The neutral reference: modal saturation of the profile's top quarter (the
+    /// glass/wall above the dough). Returns null when the top quarter holds no dominant
+    /// level.</summary>
+    private static double? NeutralReferenceLevel(double[] smoothed)
+    {
+        var quarter = Math.Max(4, smoothed.Length / 4);
+        var hist = new int[256];
+        for (var y = 0; y < quarter && y < smoothed.Length; y++)
+        {
+            hist[Math.Clamp((int)Math.Round(smoothed[y]), 0, 255)]++;
+        }
+        var best = 0;
+        var bestCount = 0;
+        for (var i = 0; i < 256; i++)
+        {
+            if (hist[i] > bestCount)
+            {
+                bestCount = hist[i];
+                best = i;
+            }
+        }
+        return bestCount > 0 ? (double?)best : null;
+    }
+
+    /// <summary>Per-row median channel spread (max−min across B/G/R) of a BGR strip —
+    /// the saturation proxy. Median for the same glare-robustness reasons as the
+    /// intensity profile.</summary>
+    private static float[] ReduceRowsSaturationMedian(Mat column)
+    {
+        var rows = column.Rows;
+        var cols = column.Cols;
+        var result = new float[rows];
+        var buffer = new int[cols];
+        var mid = cols / 2;
+        for (var y = 0; y < rows; y++)
+        {
+            for (var x = 0; x < cols; x++)
+            {
+                var pixel = column.Get<Vec3b>(y, x);
+                var b = pixel.Item0;
+                var g = pixel.Item1;
+                var r = pixel.Item2;
+                var max = Math.Max(b, Math.Max(g, r));
+                var min = Math.Min(b, Math.Min(g, r));
+                buffer[x] = max - min;
+            }
+            Array.Sort(buffer);
+            result[y] = cols % 2 == 0 ? (buffer[mid - 1] + buffer[mid]) / 2f : buffer[mid];
+        }
+        return result;
+    }
+
+    /// <summary>Finds the top edge of the dough band in the row intensity profile,
+    /// relative to the bright reference level above it (the mode of the profile's top
+    /// quarter: wall and glass). The surface is the first row that persistently drops
+    /// below (brightLevel − MinAmbientBandContrast) and whose interior is genuinely dark.
+    /// A long dark band qualifies at the weaker ambient contrast (the real morning scene:
+    /// dough only ~20 gray levels below the wall, fading over tens of rows — no Otsu split
+    /// and no global above/below step isolates it); a short band must show the massive
+    /// backlit step instead. This rejects the jar-base shadow: it is not dark enough
+    /// (observed ~150 gray) to pass the darkness gate and its step (~50) is below the
+    /// backlit threshold.</summary>
+    public static int? FindDoughBandTop(
+        IReadOnlyList<float> rowIntensity,
+        out double contrast,
+        double strongContrast = 55.0,
+        double minAmbientContrast = 18.0,
+        double darkBandMaxIntensity = 135.0,
+        double minDarkBandFraction = 0.2)
     {
         contrast = 0;
         if (rowIntensity.Count < 10) return null;
         var smoothed = MovingAverage(rowIntensity, 7);
         var n = smoothed.Length;
         var searchStart = Math.Max(1, (int)(n * 0.05));
-        var searchEnd = Math.Min(n - 1, (int)(n * 0.95));
-        if (searchEnd - searchStart < 5) return null;
-        var prefix = new double[n];
-        for (var i = 0; i < n; i++)
+        if (searchStart >= n - 5) return null;
+        var brightLevel = BrightReferenceLevel(smoothed);
+        if (brightLevel is null) return null;
+        var line = brightLevel.Value - minAmbientContrast;
+        // Reject single-row dips (lettering, thin residue) but keep short backlit bands.
+        var minRun = Math.Max(3, n / 60);
+        var longRun = (int)Math.Ceiling(Math.Max(4, n * minDarkBandFraction));
+        var insideWindow = Math.Max(4, n / 5);
+        for (var y = searchStart; y < n; y++)
         {
-            prefix[i] = i == 0 ? smoothed[0] : prefix[i - 1] + smoothed[i];
+            if (smoothed[y] >= line) continue;
+            var end = y + 1;
+            while (end < n && smoothed[end] < line) end++;
+            var runLength = end - y;
+            if (runLength < minRun) continue;
+            var insideEnd = Math.Min(end, y + insideWindow);
+            double insideSum = 0;
+            for (var row = y; row < insideEnd; row++) insideSum += smoothed[row];
+            var insideMean = insideSum / (insideEnd - y);
+            var bandContrast = brightLevel.Value - insideMean;
+            if (insideMean > darkBandMaxIntensity && bandContrast < strongContrast) continue;
+            if (runLength < longRun && bandContrast < strongContrast) continue;
+            contrast = bandContrast;
+            return y;
         }
-        var total = prefix[n - 1];
-        double minValue = double.PositiveInfinity, maxValue = double.NegativeInfinity;
-        for (var y = searchStart; y < searchEnd; y++)
-        {
-            if (smoothed[y] < minValue) minValue = smoothed[y];
-            if (smoothed[y] > maxValue) maxValue = smoothed[y];
-        }
-        if (maxValue - minValue < MinStepContrast) return null;
-        int? bestRow = null;
-        var bestScore = double.NegativeInfinity;
-        var bestContrast = 0.0;
-        var scores = new double[n];
-        for (var y = searchStart; y < searchEnd; y++)
-        {
-            var meanAbove = prefix[y] / y;
-            var meanBelow = (total - prefix[y]) / (n - y);
-            var stepContrast = meanAbove - meanBelow;
-            var left = y > 0 ? smoothed[y - 1] : smoothed[y];
-            var right = y < n - 1 ? smoothed[y + 1] : smoothed[y];
-            var localDrop = left - right;
-            var window = Math.Max(2, n / 20);
-            var beforeStart = Math.Max(0, y - window);
-            var beforeEnd = Math.Max(beforeStart, y - 1);
-            var afterStart = Math.Min(n - 1, y + 1);
-            var afterEnd = Math.Min(n - 1, y + window);
-            var beforeMean = beforeEnd >= beforeStart ? Average(smoothed, beforeStart, beforeEnd) : smoothed[y];
-            var afterMean = afterEnd >= afterStart ? Average(smoothed, afterStart, afterEnd) : smoothed[y];
-            var sustainedDrop = beforeMean - afterMean;
-            var score = stepContrast * 1.1 + Math.Max(0.0, sustainedDrop) * 0.8 + Math.Max(0.0, localDrop) * 0.25;
-            scores[y] = score;
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestRow = y;
-                bestContrast = stepContrast;
-            }
-        }
-        if (bestRow is null || bestContrast < MinStepContrast) return null;
-        var threshold = bestScore * 0.85;
-        var selectedRow = bestRow.Value;
-        for (var y = searchStart; y < bestRow.Value; y++)
-        {
-            if (scores[y] >= threshold && bestContrast >= MinStepContrast)
-            {
-                selectedRow = y;
-                break;
-            }
-        }
-        contrast = bestContrast;
-        return selectedRow;
+        return null;
     }
 
-    private static double Average(double[] values, int start, int end)
+    /// <summary>The bright reference level above the dough: the modal value of the
+    /// profile's top quarter (wall and glass rows). Rounded histogram mode; null when the
+    /// top quarter is implausibly dark (frame mostly covered by something else).</summary>
+    private static double? BrightReferenceLevel(double[] smoothed)
     {
-        if (end < start) return values[start];
-        var sum = 0.0;
-        for (var i = start; i <= end; i++) sum += values[i];
-        return sum / (end - start + 1);
+        var quarter = Math.Max(4, smoothed.Length / 4);
+        var hist = new int[256];
+        for (var y = 0; y < quarter && y < smoothed.Length; y++)
+        {
+            hist[Math.Clamp((int)Math.Round(smoothed[y]), 0, 255)]++;
+        }
+        var best = 0;
+        var bestCount = 0;
+        for (var i = 0; i < 256; i++)
+        {
+            if (hist[i] > bestCount)
+            {
+                bestCount = hist[i];
+                best = i;
+            }
+        }
+        // The wall/glass above the dough must actually be bright for this method to
+        // apply; otherwise the frame shows something we don't understand.
+        return bestCount > 0 && best >= 100 ? (double?)best : null;
     }
 
     public static int? FindDoughSurfaceFromEnergy(IReadOnlyList<float> rowEnergy)

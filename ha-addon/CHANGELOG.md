@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.36
+
+- Add warm-tone surface detection as the primary method: the dough is tan (large red/blue
+  channel spread) while glass, wall and background are neutral (sat 2-5 vs dough 25-32,
+  measured on real frames). Stable under ambient light even for a fresh-fed light dough
+  that shows almost no brightness step at all. Backlit nights keep the dark-band method,
+  diffusely lit boxes the edge-energy fallback.
+- Fix wall detection latching onto frame-border artifacts (door frames at x≈64/1280 and
+  x≈1216/1280 on the real camera): vertical lines within 6% of the frame border are now
+  rejected, letting the full-frame fallback column take over.
+- Rework the dark-band surface rule after measuring the real morning scene: the dough
+  fades only ~16 gray levels below the wall over tens of rows — no global above/below
+  step and no Otsu split isolates it. The band is now found as a persistent drop below
+  (bright reference − MinAmbientBandContrast), requiring genuine darkness
+  (DarkBandMaxIntensity) and length (MinDarkBandFraction), or the massive backlit step.
+  This also keeps rejecting the jar-base shadow (observed ~150 gray, brief) that
+  motivated the 0.1.27 threshold raise.
+- Replay-verified on the first real collection hour: 186/186 frames detected via the
+  warm method, surface σ = 3 px, zero fake rise during the lag phase (previous state:
+  4/145 detected with a 55% phantom rise).
+
 ## 0.1.35
 
 - Add dark-frame gate: frames with no sufficiently bright region (P90 below
