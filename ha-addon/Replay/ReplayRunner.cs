@@ -73,13 +73,21 @@ public static class ReplayRunner
 
         var detector = new JarLevelDetector(visionOptions);
         var riseAnalyzer = new RiseAnalyzer(BuildReplayAnalysisOptions(options.Analysis));
+        var warnings = new List<string>();
+        // Mirror the live Worker: a camera move mid-replay invalidates the rise baseline.
+        var currentFrame = frames[0];
+        detector.SceneChanged += () =>
+        {
+            _ = riseAnalyzer.Reset();
+            warnings.Add($"Scene change at {currentFrame.Time:yyyy-MM-dd HH:mm:ss}: rise session reset");
+        };
 
         var rows = new List<ReplayFrameRow>(frames.Count);
-        var warnings = new List<string>();
         RiseReading? lastReading = null;
 
         foreach (var frame in frames)
         {
+            currentFrame = frame;
             byte[] bytes;
             try
             {
@@ -348,7 +356,9 @@ public static class ReplayRunner
             MinFrameIntensity = src.MinFrameIntensity,
             MinFrameContrast = src.MinFrameContrast,
             DebugSaveAnnotatedImages = true,
-            DebugOutputDirectory = debugDir
+            DebugOutputDirectory = debugDir,
+            // Replay must never touch the live addon's persisted jar geometry.
+            GeometryStateFilePath = null
         };
     }
 

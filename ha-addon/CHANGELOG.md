@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.38
+
+- Auto-reset the rise session when the camera moves: the detector now persists the
+  established jar column (`jar_geometry.json`), seeds it on restart, and raises
+  `SceneChanged` when the column provably moved (3 consecutive off-aggregate extents, or a
+  resolution change). `Worker` resets the analyzer session on it — the rise baseline is a
+  pixel height in the old geometry and is meaningless after a camera move, so no manual
+  reset button press is needed anymore.
+- Fix a crash when the camera resolution changes while extents from the old size are
+  still in the stabilization window: bounds are now clamped into the current frame and a
+  resolution change clears the window immediately.
+- Replay mirrors the same auto-reset and reports scene changes as warnings.
+
 ## 0.1.37
 
 - Fix the jar column falling back to full-frame bounds (drawn at the door-frame edges on

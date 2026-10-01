@@ -50,6 +50,59 @@ public sealed class JarLevelDetector(VisionOptions options)
     /// hour.</summary>
     private int _extentDisagreementStreak;
 
+    /// <summary>Pixel size of the previous frame. A change (camera reconfiguration) makes
+    /// all stored extents invalid instantly — bounds from a 1280px frame index out of
+    /// range on a 640px one.</summary>
+    private (int Width, int Height)? _lastFrameSize;
+
+    /// <summary>Raised when the scene-change detector fires (jar geometry moved). The host
+    /// resets the analyzer session here: the rise baseline is a pixel height measured in
+    /// the old geometry and is meaningless after a camera move.</summary>
+    public event Action? SceneChanged;
+
+    private (int Left, int Right)? _persistedGeometry = LoadGeometry(options.GeometryStateFilePath);
+
+    private bool _geometrySeeded;
+
+    private static (int Left, int Right)? LoadGeometry(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        try
+        {
+            var filePath = ResolveGeometryPath(path);
+            if (!File.Exists(filePath)) return null;
+            var node = JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(filePath));
+            return (node.GetProperty("left").GetInt32(), node.GetProperty("right").GetInt32());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or KeyNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    private void PersistGeometry(int left, int right)
+    {
+        if (string.IsNullOrWhiteSpace(options.GeometryStateFilePath)) return;
+        try
+        {
+            var filePath = ResolveGeometryPath(options.GeometryStateFilePath);
+            var directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+            File.WriteAllText(filePath, JsonSerializer.Serialize(new { left, right }));
+            _persistedGeometry = (left, right);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort: without persistence, camera moves across restarts just need the
+            // manual reset button.
+        }
+    }
+
+    private static string ResolveGeometryPath(string path) =>
+        Path.IsPathFullyQualified(path)
+            ? path
+            : Path.Combine(AppContext.BaseDirectory, path);
+
     private sealed record WallLine(int X, int Top, int Bottom);
 
     /// <summary>How the jar column was established: "walls" (Hough-detected vertical glass
@@ -78,6 +131,15 @@ public sealed class JarLevelDetector(VisionOptions options)
         Cv2.CvtColor(rawColor, rawGray, ColorConversionCodes.BGR2GRAY);
         using var img = ApplyConfiguredRoi(rawGray);
         using var imgColor = ApplyConfiguredRoi(rawColor);
+        // Camera reconfiguration (resolution change) invalidates every stored extent
+        // instantly; the scene-change streak below cannot save the in-between frames.
+        var frameSize = (img.Width, img.Height);
+        if (_lastFrameSize is { } last && last != frameSize)
+        {
+            _recentWarmColumns.Clear();
+            _extentDisagreementStreak = 0;
+        }
+        _lastFrameSize = frameSize;
         // Intensity statistics computed once per frame: Canny thresholds and the
         // dark-frame gate share them.
         var (medianIntensity, p10, p90) = ComputeIntensityStats(img);
@@ -171,6 +233,9 @@ public sealed class JarLevelDetector(VisionOptions options)
             jarColumn.Top,
             jarColumn.Right - jarColumn.Left - 2 * inset,
             jarColumn.Bottom - jarColumn.Top);
+        // Defensive clamp: stale/held columns (scene change, seeding) must never index
+        // out of the current frame.
+        rect &= new Rect(0, 0, gray.Width, gray.Height);
         if (rect.Width <= 0 || rect.Height <= 0)
         {
             LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
@@ -229,6 +294,14 @@ public sealed class JarLevelDetector(VisionOptions options)
         var zoneBottom = Math.Min(frameHeight - 1, (int)(frameHeight * 0.92));
         var neutralTop = Math.Max(1, (int)(frameHeight * 0.25));
         if (zoneBottom - zoneTop < 10 || neutralTop >= zoneTop) return null;
+        // Seed once from the persisted column so a camera move made while the add-on was
+        // down is caught by the same disagreement logic as a live bump. The seed ages out
+        // of the window after WarmColumnHistorySize frames.
+        if (!_geometrySeeded)
+        {
+            _geometrySeeded = true;
+            if (_persistedGeometry is { } seededColumn) _recentWarmColumns.Enqueue(seededColumn);
+        }
         using var saturation = SaturationMap(color);
         if (saturation.Empty()) return null;
 
@@ -317,12 +390,21 @@ public sealed class JarLevelDetector(VisionOptions options)
                 _recentWarmColumns.Clear();
                 _recentWarmColumns.Enqueue((left, right));
                 _extentDisagreementStreak = 0;
+                PersistGeometry(left, right);
+                // The rise baseline is a pixel height in the OLD geometry; hosts must
+                // reset the analyzer session when this fires.
+                SceneChanged?.Invoke();
                 return new JarColumn(left, right, marginY, frameHeight - marginY, "warm");
             }
         }
         else
         {
             _extentDisagreementStreak = 0;
+        }
+        if (_persistedGeometry is not { } persisted
+            || persisted.Left != columnLeft || persisted.Right != columnRight)
+        {
+            PersistGeometry(columnLeft, columnRight);
         }
         return new JarColumn(columnLeft, columnRight, marginY, frameHeight - marginY, "warm");
     }

@@ -73,6 +73,12 @@ public sealed class VisionOptions
     /// below it.</summary>
     public double WarmColumnMinFraction { get; init; } = 0.55;
 
+    /// <summary>Persists the established warm-extent jar column (left/right px). On restart
+    /// the detector seeds its window from it, so a camera move that happened while the
+    /// add-on was down is detected by the same scene-change logic as a live bump — and the
+    /// analyzer session can be reset automatically. Null disables persistence.</summary>
+    public string? GeometryStateFilePath { get; init; } = "jar_geometry.json";
+
     public bool DebugSaveAnnotatedImages { get; init; } = true;
 
     /// <summary>Where annotated debug images and the per-frame diagnostics log are written.

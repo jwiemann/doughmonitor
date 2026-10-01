@@ -22,6 +22,15 @@ public sealed class Worker(
             var reading = analyzer.Reset();
             await mqtt.PublishReadingAsync(reading, ct);
         };
+        // A moved/bumped camera invalidates the session baseline: rise percent is measured
+        // against a dough height in pixels of the OLD geometry. The detector fires this
+        // when the jar column provably moved (3 consecutive off-frame extents), covering
+        // both live bumps and moves made while the add-on was down (geometry is persisted).
+        detector.SceneChanged += () =>
+        {
+            logger.LogWarning("Jar geometry changed (camera moved/bumped); resetting rise session");
+            _ = analyzer.Reset();
+        };
         try
         {
             await mqtt.ConnectAsync(ct)
