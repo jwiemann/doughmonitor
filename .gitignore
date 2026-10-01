@@ -27,3 +27,5 @@ sourdough_state.json
 # OS files
 Thumbs.db
 .DS_Store
+# Local replay/analysis scratch
+tmp-*/
