@@ -7,11 +7,10 @@ using SourdoughMonitor.Config;
 
 namespace SourdoughMonitor.Vision;
 
-/// <summary>Locates the container via its vertical walls and the dough surface via a hybrid of
-/// dark-band detection (robust for backlit jars: bright glass above, opaque dough band below,
-/// possibly bright again underneath) and horizontal edge energy (robust for diffusely lit boxes).
-/// Falls back to a full-frame column when walls are not detectable. Fully self-tuning: Canny
-/// thresholds derive from frame intensity, wall length from frame size.</summary>
+/// <summary>Locates a measurement column from a backlit glass foot or the dough's
+/// ambient-light extent, then traces the lower-connected content boundary. The drawn
+/// curve and reported surface share one basis. Geometry is held across lighting
+/// changes and invalidated when the camera's coordinate system changes.</summary>
 public sealed class JarLevelDetector(VisionOptions options)
 {
     /// <summary>Minimum mean-gray-level contrast between the region directly above a dark band
@@ -34,21 +33,24 @@ public sealed class JarLevelDetector(VisionOptions options)
     /// <summary>JPEG bytes of the most recently annotated debug image, or null if none yet.</summary>
     public byte[]? LatestAnnotatedImageBytes { get; private set; }
 
-    /// <summary>Recent warm-extent column bounds. The dough's visible extent flickers with
-    /// lighting (edges wash out; occasional warm structures beside the jar pollute). The
-    /// INTERSECTION over the last <see cref="WarmColumnHistorySize"/> frames (~1 h) is the
-    /// region that was dough in every recent frame: static drawn lines, a measurement
-    /// strip guaranteed inside the dough, immune to both washout and pollution, and
-    /// self-healing after a bumped camera once the polluted window ages out.</summary>
+    /// <summary>Recent supported column bounds. A densest-cluster mode rejects exposure
+    /// washout and one-sided background pollution; confirmed two-sided moves reset
+    /// the column and the growth baseline.</summary>
     private readonly Queue<(int Left, int Right)> _recentWarmColumns = new();
 
-    private const int WarmColumnHistorySize = 60;
+    /// <summary>Warm-crossing anchors smoothed over nine samples for exposure flicker.
+    /// These position the luminance search window; they are not reported as levels.</summary>
+    private readonly Queue<int> _recentWarmFronts = new();
+
+    private const int WarmColumnHistorySize = 12;
 
     /// <summary>Consecutive frames whose fresh warm extent disagreed with the window
     /// aggregate on both edges — three in a row mean the camera/scene moved and the
     /// window must re-establish on the new scene instead of blending two scenes for an
     /// hour.</summary>
     private int _extentDisagreementStreak;
+
+    private int _warmColumnSupport;
 
     /// <summary>Pixel size of the previous frame. A change (camera reconfiguration) makes
     /// all stored extents invalid instantly — bounds from a 1280px frame index out of
@@ -131,13 +133,33 @@ public sealed class JarLevelDetector(VisionOptions options)
         Cv2.CvtColor(rawColor, rawGray, ColorConversionCodes.BGR2GRAY);
         using var img = ApplyConfiguredRoi(rawGray);
         using var imgColor = ApplyConfiguredRoi(rawColor);
-        // Camera reconfiguration (resolution change) invalidates every stored extent
-        // instantly; the scene-change streak below cannot save the in-between frames.
+        // A matching-aspect resize can seed rescaled geometry, but its pixel-height
+        // growth baseline is still invalid. Fresh body evidence confirms the seed.
         var frameSize = (img.Width, img.Height);
         if (_lastFrameSize is { } last && last != frameSize)
         {
-            _recentWarmColumns.Clear();
+            var xScale = img.Width / (double)last.Width;
+            var yScale = img.Height / (double)last.Height;
+            if (Math.Abs(xScale - yScale) < 0.001)
+            {
+                var count = _recentWarmColumns.Count;
+                for (var i = 0; i < count; i++)
+                {
+                    var column = _recentWarmColumns.Dequeue();
+                    _recentWarmColumns.Enqueue(((int)Math.Round(column.Left * xScale),
+                        (int)Math.Round(column.Right * xScale)));
+                }
+            }
+            else
+            {
+                _recentWarmColumns.Clear();
+            }
+            _recentWarmFronts.Clear();
             _extentDisagreementStreak = 0;
+            _persistedGeometry = null;
+            _geometrySeeded = true;
+            _warmColumnSupport = 0;
+            SceneChanged?.Invoke();
         }
         _lastFrameSize = frameSize;
         // Intensity statistics computed once per frame: Canny thresholds and the
@@ -145,11 +167,12 @@ public sealed class JarLevelDetector(VisionOptions options)
         var (medianIntensity, p10, p90) = ComputeIntensityStats(img);
         var frameStats = (Mean: (double?)Cv2.Mean(img).Val0, Median: (double?)medianIntensity,
             P10: (double?)p10, P90: (double?)p90);
+        var detectedGlow = DetectGlowBlob(img);
         // Night frames without backlight are uniformly dark: nothing bright enough to be
         // a lit jar (P90 floor) and no meaningful contrast (P90-P10 floor). The edge-energy
         // method would "detect" noise there and pollute the growth series. Percentile-based
         // so a backlit night frame (dark room, bright jar) still passes.
-        if (p90 < options.MinFrameIntensity || p90 - p10 < options.MinFrameContrast)
+        if (detectedGlow is null && (p90 < options.MinFrameIntensity || p90 - p10 < options.MinFrameContrast))
         {
             LastOutcome = "dark_frame";
             LastDiagnostics = WithFrameStats(new DetectionDiagnostics("dark", 0, null, null), frameStats);
@@ -157,50 +180,98 @@ public sealed class JarLevelDetector(VisionOptions options)
                 SaveDebugImage(img, null, null, null, null, now, null);
             return null;
         }
-        using var blurred = new Mat();
-        Cv2.GaussianBlur(img, blurred, new Size(5, 5), 0);
-        // Visualization mask for the debug image: where the color filter (warm tone) sees
-        // dough. Off by default (DebugHighlightDough) — the translucent overlay makes it
-        // hard to tell shadows from actual dough when inspecting the raw scene.
-        using var visWarm = options.DebugHighlightDough ? ComputeVisWarmMask(imgColor, img) : null;
-        // Pass 1: wall-based detection at two Canny relaxation levels.
-        foreach (var relaxation in new[] { 1.0, 0.6 })
+        if (detectedGlow is { } glow)
         {
-            using var edges = AutoCanny(blurred, medianIntensity, relaxation);
-            var jarColumn = FindJarColumn(edges, img.Width, img.Height, relaxation);
-            if (jarColumn is null) continue;
-            var measurement = MeasureWithinColumn(edges, img, imgColor, jarColumn, now, frameStats, sessionBaselineHeightPx, visWarm);
-            if (measurement is not null)
+            var litColumn = FindBacklitColumn(img, glow);
+            var litMeasurement = litColumn is not null
+                ? MeasureBacklit(img, glow, litColumn, now, frameStats, sessionBaselineHeightPx)
+                : null;
+            if (litMeasurement is not null)
             {
                 LastOutcome = "detected";
-                return measurement;
+                return litMeasurement;
             }
+            // Never reinterpret a recognized light source as a warm wall or edge surface.
+            LastOutcome = litColumn is null ? "no_jar" : "no_surface";
+            LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
+            SaveDebugImage(img, litColumn, null, litColumn?.Bottom, null, now, null);
+            return null;
         }
-        // Pass 2: saturation-derived walls — the dough's warm horizontal extent marks the
-        // jar interior, so its edges ARE the glass walls. Robust where the glass has no
-        // Canny contrast (ambient light against a white wall). The returned bounds are the
-        // median over the recent window, so the drawn lines sit still.
+        using var blurred = new Mat();
+        Cv2.GaussianBlur(img, blurred, new Size(5, 5), 0);
+        using var visWarm = options.DebugHighlightDough ? ComputeVisWarmMask(imgColor, img) : null;
+        // Brightness skew is only a fallback hint. A small daylight jar on a dark
+        // background has the same histogram, so it must not disable body geometry.
+        var backlitScene = frameStats.Median is { } backlitMed && frameStats.P90 is { } backlitP90
+            && backlitP90 - backlitMed > 0.5 * backlitMed;
+        // The verified light-source/rim path above wins. Otherwise try the warm body
+        // before interpreting room brightness or wall edges.
         {
             using var edges = AutoCanny(blurred, medianIntensity, 1.0);
             var warmColumn = FindJarColumnByWarmExtent(
-                imgColor,
-                img,
-                img.Width,
-                img.Height,
-                options.WarmColumnSaturationStep,
-                options.WarmColumnMinFraction);
+                imgColor, img, img.Width, img.Height,
+                options.WarmColumnSaturationStep, options.WarmColumnMinFraction,
+                options.NeutralReferenceCeiling);
             if (warmColumn is not null)
             {
-                var measurement = MeasureWithinColumn(edges, img, imgColor, warmColumn, now, frameStats, sessionBaselineHeightPx, visWarm);
+                var measurement = MeasureWithinColumn(edges, img, imgColor, warmColumn,
+                    now, frameStats, sessionBaselineHeightPx, visWarm);
+                if (measurement is not null)
+                {
+                    _warmColumnSupport = Math.Min(3, _warmColumnSupport + 1);
+                    LastOutcome = "detected";
+                    return measurement;
+                }
+                // A cold-start colour patch is only a geometry proposal. Once the
+                // column has three supporting samples, a contour miss cannot authorize
+                // switching to a wall or unrelated fallback column.
+                if (_warmColumnSupport >= 3)
+                {
+                    LastOutcome = "no_surface";
+                    LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
+                    SaveDebugImage(img, warmColumn, null, warmColumn.Bottom, null, now, visWarm);
+                    return null;
+                }
+            }
+            if (_extentDisagreementStreak > 0)
+            {
+                LastOutcome = "no_jar";
+                LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
+                SaveDebugImage(img, null, null, null, null, now, null);
+                return null;
+            }
+        }
+        if (backlitScene)
+        {
+            var darkColumn = FindJarColumnByDarkExtent(img, img.Width, img.Height, options.DarkBandMaxIntensity);
+            if (darkColumn is not null)
+            {
+                using var edges = AutoCanny(blurred, medianIntensity, 1.0);
+                var measurement = MeasureWithinColumn(edges, img, imgColor, darkColumn,
+                    now, frameStats, sessionBaselineHeightPx, visWarm, suppressWarmPath: true);
                 if (measurement is not null)
                 {
                     LastOutcome = "detected";
                     return measurement;
                 }
-                // The held window no longer contains the dough (bumped camera): drop it so
-                // the next frame re-establishes on fresh extents.
-                _recentWarmColumns.Clear();
-                _extentDisagreementStreak = 0;
+            }
+        }
+        // Transparent-wall evidence is useful only after the specific dough geometry
+        // failed; lit stucco beside a backlit jar must never be interpreted as walls.
+        if (!backlitScene)
+        {
+            foreach (var relaxation in new[] { 1.0, 0.6 })
+            {
+                using var edges = AutoCanny(blurred, medianIntensity, relaxation);
+                var column = FindJarColumn(edges, img.Width, img.Height, relaxation);
+                if (column is null) continue;
+                var measurement = MeasureWithinColumn(edges, img, imgColor, column,
+                    now, frameStats, sessionBaselineHeightPx, visWarm);
+                if (measurement is not null)
+                {
+                    LastOutcome = "detected";
+                    return measurement;
+                }
             }
         }
         // Pass 3: walls invisible (transparent container / box filling the frame)
@@ -209,7 +280,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         {
             using var edges = AutoCanny(blurred, medianIntensity, relaxation);
             var fallbackColumn = BuildFallbackColumn(img);
-            var measurement = MeasureWithinColumn(edges, img, imgColor, fallbackColumn, now, frameStats, sessionBaselineHeightPx, visWarm);
+            var measurement = MeasureWithinColumn(edges, img, imgColor, fallbackColumn, now, frameStats, sessionBaselineHeightPx, visWarm, suppressWarmPath: backlitScene);
             if (measurement is not null)
             {
                 LastOutcome = "detected";
@@ -231,7 +302,8 @@ public sealed class JarLevelDetector(VisionOptions options)
         DateTimeOffset now,
         (double? Mean, double? Median, double? P10, double? P90) frameStats,
         double? sessionBaselineHeightPx,
-        Mat? visWarm)
+        Mat? visWarm,
+        bool suppressWarmPath = false)
     {
         var inset = Math.Max(3, (jarColumn.Right - jarColumn.Left) / 10);
         var rect = new Rect(
@@ -250,13 +322,32 @@ public sealed class JarLevelDetector(VisionOptions options)
         using var columnEdges = edges[rect];
         using var columnGray = gray[rect];
         using var columnColor = color[rect];
-        var doughTop = FindDoughSurface(columnEdges, columnGray, columnColor, frameStats);
+        var doughTop = FindDoughSurface(columnEdges, columnGray, columnColor, frameStats, suppressWarmPath);
         if (doughTop is null)
         {
             SaveDebugImage(gray, jarColumn, null, null, null, now, visWarm);
             return null;
         }
+        var anchorY = jarColumn.Top + doughTop.Value;
         var jarBottom = FindJarBottom(columnEdges, columnGray, doughTop.Value, rect.Height - 1);
+        jarColumn = jarColumn with { Bottom = jarColumn.Top + jarBottom };
+        // Color positions the search window; luminance traces the visible boundary.
+        // Both ambient and backlit measurements report the traced curve's middle third.
+        var contourColumn = jarColumn.Kind is "dark" or "fallback"
+            ? jarColumn with { Left = rect.Left + rect.Width / 4, Right = rect.Right - rect.Width / 4 }
+            : jarColumn;
+        var curve = TraceContentSurface(gray, contourColumn, anchorY, null, out var contrast);
+        if (curve is null || curve.Count == 0)
+        {
+            SaveDebugImage(gray, jarColumn, null, null, null, now, visWarm);
+            return null;
+        }
+        var levelRow = CurveDeepestRow(curve,
+            jarColumn with { Left = curve[0].X, Right = curve[^1].X });
+        if (jarColumn.Kind is "dark" or "fallback")
+            jarColumn = jarColumn with { Left = curve[0].X, Right = curve[^1].X };
+        if (LastDiagnostics is { } measuredDiagnostics)
+            LastDiagnostics = measuredDiagnostics with { BandContrast = contrast, FinalRow = levelRow - jarColumn.Top };
         // The jar's physical bottom doesn't move between frames, so the session-start dough
         // surface can be re-derived in this frame's coordinates from this frame's jar bottom.
         var sessionStartSurfaceY = sessionBaselineHeightPx is not null
@@ -265,13 +356,285 @@ public sealed class JarLevelDetector(VisionOptions options)
         SaveDebugImage(
             gray,
             jarColumn,
-            jarColumn.Top + doughTop.Value,
+            levelRow,
             jarColumn.Top + jarBottom,
             sessionStartSurfaceY,
             now,
-            visWarm);
-        return new LevelMeasurement(now, jarColumn.Top + doughTop.Value, jarColumn.Top, jarColumn.Top + jarBottom);
+            visWarm,
+            curve);
+        return new LevelMeasurement(now, levelRow, jarColumn.Top, jarColumn.Top + jarBottom);
     }
+
+    private readonly record struct GlowBlob(int X, int Y, int Width, int Height)
+    {
+        public int Right => X + Width;
+
+        public int Bottom => Y + Height;
+    }
+
+    // A light source proposes a search region; it is never itself a surface measurement.
+    private static GlowBlob? DetectGlowBlob(Mat gray)
+    {
+        using var hot = new Mat();
+        Cv2.Threshold(gray, hot, 235, 255, ThresholdTypes.Binary);
+        if (hot.CountNonZero() < Math.Max(8, gray.Width * (double)gray.Height * 0.001)) return null;
+        using var labels = new Mat();
+        using var stats = new Mat();
+        using var centroids = new Mat();
+        var count = Cv2.ConnectedComponentsWithStats(hot, labels, stats, centroids);
+        var best = -1;
+        var bestArea = gray.Width * (double)gray.Height * 0.001;
+        for (var i = 1; i < count; i++)
+        {
+            var width = stats.At<int>(i, 2);
+            var bottom = stats.At<int>(i, 1) + stats.At<int>(i, 3);
+            var area = stats.At<int>(i, 4);
+            if (width < gray.Width * 0.03 || width > gray.Width * 0.7 || bottom >= gray.Height - 12)
+                continue;
+            if (area <= bestArea) continue;
+            bestArea = area;
+            best = i;
+        }
+        return best < 0 ? null : new GlowBlob(
+            stats.At<int>(best, 0), stats.At<int>(best, 1),
+            stats.At<int>(best, 2), stats.At<int>(best, 3));
+    }
+
+    // The lit glass foot must be a separate, wide component below the source. This
+    // rejects the illuminated wall and narrow reflection strips before measuring dough.
+    private JarColumn? FindBacklitColumn(Mat gray, GlowBlob glow)
+    {
+        var height = gray.Height;
+        var width = gray.Width;
+        var top = glow.Bottom + Math.Max(3, (height - glow.Bottom) * 15 / 100);
+        var left = Math.Max(0, glow.X - width * 3 / 10);
+        var right = Math.Min(width, glow.Right + width * 3 / 10);
+        if (height - top < 20 || right - left < 20) return null;
+        using var region = gray[new Rect(left, top, right - left, height - top - 2)];
+        var (_, _, p90) = ComputeIntensityStats(region);
+        using var mask = new Mat();
+        Cv2.Threshold(region, mask, Math.Max(100, p90), 255, ThresholdTypes.Binary);
+        using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect,
+            new Size(Math.Max(3, 2 * (width / 360) + 1), Math.Max(1, 2 * (height / 600) + 1)));
+        Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
+        using var labels = new Mat();
+        using var stats = new Mat();
+        using var centroids = new Mat();
+        var count = Cv2.ConnectedComponentsWithStats(mask, labels, stats, centroids);
+        var sourceCenter = (glow.X + glow.Right) / 2;
+        var bestArea = 0;
+        Rect? rim = null;
+        for (var i = 1; i < count; i++)
+        {
+            var x = left + stats.At<int>(i, 0);
+            var y = top + stats.At<int>(i, 1);
+            var w = stats.At<int>(i, 2);
+            var h = stats.At<int>(i, 3);
+            var area = stats.At<int>(i, 4);
+            if (w < width * 0.12 || w <= 3 * h || x >= sourceCenter || x + w <= sourceCenter)
+                continue;
+            // A higher reflection can be larger than the actual glass foot. The
+            // lowest separate, wide component is the physical base candidate.
+            if (rim is { } held && (y + h < held.Bottom
+                || (y + h == held.Bottom && area <= bestArea))) continue;
+            bestArea = area;
+            rim = new Rect(x, y, w, h);
+        }
+        if (rim is not { } foot) return null;
+
+        var padding = foot.Width * 22 / 100;
+        var candidateLeft = Math.Max(2, foot.X - padding);
+        var candidateRight = Math.Min(width - 3, foot.Right + padding);
+        var rimTop = Math.Max(glow.Bottom + 8, foot.Y - Math.Max(3, height / 60));
+        var rimBottom = Math.Min(height - 1, foot.Bottom + Math.Max(3, height / 120));
+        using var rimStrip = gray[new Rect(foot.X + foot.Width / 4, rimTop,
+            Math.Max(1, foot.Width / 2), rimBottom - rimTop)];
+        var profile = MovingAverage(ReduceRowsMedian(rimStrip), Math.Max(3, 2 * (height / 288) + 1));
+        var bottom = foot.Bottom;
+        var strongestDrop = 0.0;
+        for (var y = 1; y < profile.Length - 1; y++)
+        {
+            var drop = profile[y - 1] - profile[y + 1];
+            if (drop <= strongestDrop) continue;
+            strongestDrop = drop;
+            bottom = rimTop + y;
+        }
+        if (strongestDrop < 8) return null;
+
+        if (!_geometrySeeded)
+        {
+            _geometrySeeded = true;
+            if (_persistedGeometry is { } saved && saved.Left >= 0 && saved.Right < width)
+                _recentWarmColumns.Enqueue(saved);
+        }
+        if (_recentWarmColumns.Count > 0)
+        {
+            var heldLeft = DensestCluster(_recentWarmColumns.Select(c => c.Left), 3);
+            var heldRight = DensestCluster(_recentWarmColumns.Select(c => c.Right), 3);
+            var moveTolerance = Math.Max(12, (heldRight - heldLeft) * 0.18);
+            var moved = Math.Abs(candidateLeft - heldLeft) > moveTolerance
+                && Math.Abs(candidateRight - heldRight) > moveTolerance;
+            if (moved)
+            {
+                if (++_extentDisagreementStreak < 3) return null;
+                _recentWarmColumns.Clear();
+                _recentWarmFronts.Clear();
+                _warmColumnSupport = 0;
+                SceneChanged?.Invoke();
+            }
+            else
+            {
+                candidateLeft = heldLeft;
+                candidateRight = heldRight;
+            }
+        }
+        _extentDisagreementStreak = 0;
+        _recentWarmColumns.Enqueue((candidateLeft, candidateRight));
+        while (_recentWarmColumns.Count > WarmColumnHistorySize) _recentWarmColumns.Dequeue();
+        if (_persistedGeometry is not { } persisted
+            || persisted.Left != candidateLeft || persisted.Right != candidateRight)
+            PersistGeometry(candidateLeft, candidateRight);
+        return new JarColumn(candidateLeft, candidateRight, Math.Max(2, height / 30), bottom, "backlit");
+    }
+
+    private LevelMeasurement? MeasureBacklit(
+        Mat gray, GlowBlob glow, JarColumn column, DateTimeOffset now,
+        (double? Mean, double? Median, double? P10, double? P90) frameStats,
+        double? sessionBaselineHeightPx)
+    {
+        var curve = TraceContentSurface(gray, column, glow.Bottom, glow, out var contrast);
+        if (curve is null) return null;
+        var tracedColumn = column with { Left = curve[0].X, Right = curve[^1].X };
+        var level = CurveDeepestRow(curve, tracedColumn);
+        LastDiagnostics = WithFrameStats(new DetectionDiagnostics("backlit", contrast, null, level), frameStats);
+        var baselineY = sessionBaselineHeightPx is { } baseline
+            ? (int?)Math.Round(column.Bottom - baseline) : null;
+        SaveDebugImage(gray, column, level, column.Bottom, baselineY, now, null, curve);
+        return new LevelMeasurement(now, level, column.Top, column.Bottom);
+    }
+
+    // Threshold the jar's own profile, not the dark room or LED-lit wall. The surface
+    // must terminate a sustained foreground run connected to the lower dough body.
+    private static List<Point>? TraceContentSurface(
+        Mat gray, JarColumn column, int anchorY, GlowBlob? glow, out double contrast)
+    {
+        contrast = 0;
+        var width = column.Right - column.Left;
+        if (width < 12 || column.Bottom <= column.Top + 20) return null;
+        var scaleHeight = Math.Min(gray.Height, Math.Max(40, width * 3 / 2));
+        var inset = Math.Max(2, width / 10);
+        using var strip = gray[new Rect(column.Left + inset, 0, width - 2 * inset, gray.Height)];
+        var profile = ReduceRowsMedian(strip);
+        // A weak colour ramp can put its anchor deep inside dough. Keep empty-glass
+        // reference rows in the search rather than calibrating to that interior edge.
+        var glassStart = column.Top + (column.Bottom - column.Top) / 2;
+        var start = Math.Max(column.Top, glow is { } light
+            ? light.Bottom - Math.Max(2, scaleHeight / 50)
+            : Math.Min(glassStart, anchorY - Math.Max(12, scaleHeight / 10)));
+        var end = Math.Min(gray.Height - 1, column.Bottom - Math.Max(8, (column.Bottom - start) * 12 / 100));
+        if (end - start < 25) return null;
+        var threshold = OtsuThreshold(profile.AsSpan(start, end - start));
+        var maxGap = Math.Max(2, scaleHeight / 144);
+        var gaps = 0;
+        var boundary = -1;
+        for (var y = end - 1; y >= start; y--)
+        {
+            if (profile[y] <= threshold) gaps = 0;
+            else if (++gaps > maxGap)
+            {
+                boundary = y + gaps;
+                break;
+            }
+        }
+        if (boundary <= start + maxGap || end - boundary < scaleHeight * 0.08) return null;
+        var refStart = Math.Max(start, boundary - Math.Max(10, scaleHeight / 30));
+        var refEnd = Math.Max(refStart + 1, boundary - Math.Max(2, scaleHeight / 100));
+        var reference = 0.0;
+        for (var y = refStart; y < refEnd; y++) reference += profile[y];
+        reference /= refEnd - refStart;
+        var body = 0.0;
+        var bodyStart = Math.Max(boundary + 1, end - Math.Max(8, scaleHeight / 20));
+        for (var y = bodyStart; y < end; y++) body += profile[y];
+        body /= end - bodyStart;
+        contrast = reference - body;
+        if (contrast < 8 || (glow is null && reference < 80)) return null;
+
+        var halfWindow = Math.Max(8, scaleHeight * 65 / 1000);
+        var lo = Math.Max(start, boundary - halfWindow);
+        var hi = Math.Min(end, boundary + halfWindow);
+        using var smoothed = new Mat();
+        Cv2.Blur(gray, smoothed, new Size(1, Math.Max(3, 2 * (scaleHeight / 288) + 1)));
+        var points = new List<Point>(width);
+        for (var x = column.Left + 4; x <= column.Right - 4; x++)
+        {
+            gaps = 0;
+            var row = -1;
+            for (var y = hi - 1; y >= lo; y--)
+            {
+                if (smoothed.At<byte>(y, x) <= threshold) gaps = 0;
+                else if (++gaps > maxGap)
+                {
+                    row = y + gaps;
+                    break;
+                }
+            }
+            if (row <= lo + maxGap || row >= hi - maxGap) continue;
+            var checkEnd = Math.Min(end, row + Math.Max(20, scaleHeight / 15));
+            var foreground = 0;
+            for (var y = row; y < checkEnd; y++)
+                if (smoothed.At<byte>(y, x) <= threshold) foreground++;
+            if (foreground * 10 >= (checkEnd - row) * 7) points.Add(new Point(x, row));
+        }
+        var minimumPoints = Math.Max(8, width / 5);
+        if (points.Count < minimumPoints) return null;
+        var median = MedianOr(points);
+        var tolerance = Math.Max(10, scaleHeight * 3 / 100);
+        var keep = 0;
+        for (var i = 0; i < points.Count; i++)
+            if (Math.Abs(points[i].Y - median) <= tolerance) points[keep++] = points[i];
+        points.RemoveRange(keep, points.Count - keep);
+        if (points.Count < minimumPoints) return null;
+        var tracedColumn = column with { Left = points[0].X, Right = points[^1].X };
+        if (tracedColumn.Right - tracedColumn.Left < width / 3) return null;
+        var curve = BuildSurfaceArc(points, tracedColumn);
+        // The front-glass arc is deepest centrally. A strong upward bow is a smear
+        // or reflection outline, not the front surface; minor tilt/noise is tolerated.
+        var edgeMean = (curve[0].Y + curve[^1].Y) / 2.0;
+        var center = curve[curve.Count / 2].Y;
+        var bowTolerance = Math.Max(4, (column.Bottom - column.Top) * 0.025);
+        return center < edgeMean - bowTolerance ? null : curve;
+    }
+
+    private static int OtsuThreshold(ReadOnlySpan<float> values)
+    {
+        Span<int> histogram = stackalloc int[256];
+        histogram.Clear();
+        double sum = 0;
+        foreach (var value in values)
+        {
+            var bin = Math.Clamp((int)Math.Round(value), 0, 255);
+            histogram[bin]++;
+            sum += bin;
+        }
+        var weight = 0;
+        double partial = 0;
+        var bestVariance = -1.0;
+        var threshold = 0;
+        for (var bin = 0; bin < histogram.Length - 1; bin++)
+        {
+            weight += histogram[bin];
+            partial += bin * histogram[bin];
+            var otherWeight = values.Length - weight;
+            if (weight == 0 || otherWeight == 0) continue;
+            var difference = partial / weight - (sum - partial) / otherWeight;
+            var variance = weight * (double)otherWeight * difference * difference;
+            if (variance <= bestVariance) continue;
+            bestVariance = variance;
+            threshold = bin;
+        }
+        return threshold;
+    }
+
 
     /// <summary>Full-frame column with a small border margin to avoid frame-edge artifacts.
     /// Used when no container walls can be detected.</summary>
@@ -298,7 +661,8 @@ public sealed class JarLevelDetector(VisionOptions options)
         int frameWidth,
         int frameHeight,
         double warmColumnSaturationStep,
-        double warmColumnMinFraction)
+        double warmColumnMinFraction,
+        double neutralReferenceCeiling)
     {
         // Seed once from the persisted column so a camera move made while the add-on was
         // down is caught by the same disagreement logic as a live bump. The seed ages out
@@ -309,6 +673,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             if (_persistedGeometry is { } seededColumn) _recentWarmColumns.Enqueue(seededColumn);
         }
         ComputeTopQuarterRefs(color, gray, out var satNeutral, out var grayBright);
+        satNeutral = Math.Min(satNeutral, neutralReferenceCeiling);
         using var saturation = SaturationMap(color);
         if (saturation.Empty()) return null;
 
@@ -319,6 +684,16 @@ public sealed class JarLevelDetector(VisionOptions options)
         // dough across the actual band.
         using var warmMask = new Mat();
         Cv2.Threshold(saturation, warmMask, satNeutral + warmColumnSaturationStep, 255, ThresholdTypes.Binary);
+        // Spread alone also selects cool-tinted walls. Geometry needs genuinely warm
+        // body pixels; surface localization retains its independently calibrated mask.
+        for (var y = 0; y < warmMask.Rows; y++)
+        for (var x = 0; x < warmMask.Cols; x++)
+        {
+            if (warmMask.At<byte>(y, x) == 0) continue;
+            var pixel = color.At<Vec3b>(y, x);
+            if (pixel.Item2 <= pixel.Item0 + 1 || pixel.Item2 < pixel.Item1)
+                warmMask.Set(y, x, (byte)0);
+        }
         using var darkMask = new Mat();
         Cv2.Threshold(gray, darkMask, grayBright - 18.0, 255, ThresholdTypes.BinaryInv);
         using var doughMask = new Mat();
@@ -328,6 +703,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         var bandBottom = -1;
         var bandStart = -1;
         var bestBand = 0;
+        Rect? componentBand = null;
         var bandSearchStart = (int)(frameHeight * 0.35);
         var bandSearchEnd = Math.Min(frameHeight - 1, (int)(frameHeight * 0.95));
         for (var y = bandSearchStart; y <= bandSearchEnd + 1; y++)
@@ -345,17 +721,32 @@ public sealed class JarLevelDetector(VisionOptions options)
                 bandStart = -1;
             }
         }
-        if (bandTop < 0 || bestBand < frameHeight * 0.05) return null;
+        if (bandTop < 0 || bestBand < frameHeight * 0.05)
+        {
+            // A small jar need not cover half the whole frame. Locate a compact warm
+            // body first, then measure column coverage over that body's own row band.
+            componentBand = FindWarmBodyComponent(warmMask);
+            if (componentBand is not { } bodyBand) return null;
+            bandTop = bodyBand.Y;
+            bandBottom = bodyBand.Bottom - 1;
+            Cv2.Max(warmMask, darkMask, doughMask);
+        }
         var minJarWidth = (int)(frameWidth * 0.04);
         var bandRect = new Rect(0, bandTop, frameWidth, bandBottom - bandTop + 1);
         int left;
         int right;
         // Warm-first: the color signal is the most specific dough evidence — everything
         // else in the scene is neutral white. A warm run wide enough to be the jar
-        // interior defines the column exactly, INCLUDING the right edge where the dark
-        // signal bridges onto shadowed wall/rack (observed: extent right drifting to the
-        // door frame at 1203 while the dough ends at ~800). The dark signal only fills in
-        // when the dough is too pale for the color filter (fresh feed).
+        // interior defines the column, then the shadowed dough right of the warm edge
+        // (real dough, but dark) is recovered by walking the warm extent outward over
+        // the dough union — capped and gated so a bridging shadow can't drag the edge
+        // onto background structures (observed drift: door frame at 1203 while the
+        // dough ends at ~800). The union alone only takes over when the dough is too
+        // pale for the color filter (fresh feed).
+        using var bandMask = doughMask[bandRect];
+        using var zoneColMeans = new Mat();
+        Cv2.Reduce(bandMask, zoneColMeans, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
+        if (!zoneColMeans.GetArray(out float[] zoneMeans) || zoneMeans.Length != frameWidth) return null;
         using var warmBand = warmMask[bandRect];
         using var warmColMeans = new Mat();
         Cv2.Reduce(warmBand, warmColMeans, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
@@ -363,15 +754,12 @@ public sealed class JarLevelDetector(VisionOptions options)
         {
             var warmColumns = SmoothColumns(warmMeans, warmColumnMinFraction, frameWidth);
             (left, right, var warmLength) = LongestRun(warmColumns);
-            if (warmLength < Math.Max(minJarWidth, (int)(frameWidth * 0.25)))
+            if (warmLength < (componentBand is not null
+                ? minJarWidth : Math.Max(minJarWidth, (int)(frameWidth * 0.25))))
             {
                 // Pale dough: fall back to warm ∪ dark. The dark extent is shadow-prone on
                 // the right, but the pale phase is temporary and the surface strip survives
                 // the wall minority via the row medians.
-                using var bandMask = doughMask[bandRect];
-                using var zoneColMeans = new Mat();
-                Cv2.Reduce(bandMask, zoneColMeans, ReduceDimension.Row, ReduceTypes.Avg, MatType.CV_32F);
-                if (!zoneColMeans.GetArray(out float[] zoneMeans) || zoneMeans.Length != frameWidth) return null;
                 var doughColumns = SmoothColumns(zoneMeans, warmColumnMinFraction, frameWidth);
                 (left, right, var doughLength) = LongestRun(doughColumns);
                 if (doughLength < minJarWidth) return null;
@@ -381,8 +769,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         {
             return null;
         }
-        _recentWarmColumns.Enqueue((left, right));
-        while (_recentWarmColumns.Count > WarmColumnHistorySize) _recentWarmColumns.Dequeue();
+        if (_recentWarmColumns.Count == 0) _recentWarmColumns.Enqueue((left, right));
         // Densest-cluster mode per edge (±3 px): good-light frames agree on the dough edge,
         // washout frames scatter to narrower extents, occasional pollution scatters wider —
         // the mode sits at the true edge and stays put while good frames dominate the
@@ -390,36 +777,131 @@ public sealed class JarLevelDetector(VisionOptions options)
         var columnLeft = DensestCluster(_recentWarmColumns.Select(c => c.Left), 3);
         var columnRight = DensestCluster(_recentWarmColumns.Select(c => c.Right), 3);
         if (columnRight - columnLeft < minJarWidth) return null;
-        var marginY = Math.Max(2, frameHeight / 30);
+        var marginY = componentBand is { } component
+            ? Math.Max(2, component.Y - component.Width / 4)
+            : Math.Max(2, frameHeight / 30);
+        var columnBottom = componentBand is { } bounded
+            ? Math.Min(frameHeight - 2, bounded.Bottom + Math.Max(8, bounded.Width / 12))
+            : frameHeight - marginY;
         // Scene-change detector: both edges far off the aggregate means the camera moved.
         // After three consecutive such frames, restart the window on the new scene —
         // otherwise old-scene bounds would pollute measurements for a full window length.
-        if (Math.Abs(left - columnLeft) > frameWidth * 0.15
-            && Math.Abs(right - columnRight) > frameWidth * 0.15)
+        var moveTolerance = Math.Max(12, (columnRight - columnLeft) * 0.18);
+        if (Math.Abs(left - columnLeft) > moveTolerance
+            && Math.Abs(right - columnRight) > moveTolerance)
         {
             _extentDisagreementStreak++;
             if (_extentDisagreementStreak >= 3)
             {
                 _recentWarmColumns.Clear();
+                _recentWarmFronts.Clear();
                 _recentWarmColumns.Enqueue((left, right));
                 _extentDisagreementStreak = 0;
                 PersistGeometry(left, right);
                 // The rise baseline is a pixel height in the OLD geometry; hosts must
                 // reset the analyzer session when this fires.
+                _warmColumnSupport = 0;
                 SceneChanged?.Invoke();
-                return new JarColumn(left, right, marginY, frameHeight - marginY, "warm");
+                return new JarColumn(left, right, marginY, columnBottom, "warm");
             }
+            // Do not publish measurements in the old coordinate system while a move
+            // is being confirmed. Keep the old cluster intact for all three votes.
+            return null;
         }
         else
         {
             _extentDisagreementStreak = 0;
+        }
+        var heldWidth = columnRight - columnLeft;
+        var freshWidth = right - left;
+        // One-sided washout/pollution is a lighting change, not a new container.
+        if (freshWidth >= heldWidth * 0.75 && freshWidth <= heldWidth * 1.25)
+        {
+            _recentWarmColumns.Enqueue((left, right));
+            while (_recentWarmColumns.Count > WarmColumnHistorySize) _recentWarmColumns.Dequeue();
+            columnLeft = DensestCluster(_recentWarmColumns.Select(c => c.Left), 3);
+            columnRight = DensestCluster(_recentWarmColumns.Select(c => c.Right), 3);
         }
         if (_persistedGeometry is not { } persisted
             || persisted.Left != columnLeft || persisted.Right != columnRight)
         {
             PersistGeometry(columnLeft, columnRight);
         }
-        return new JarColumn(columnLeft, columnRight, marginY, frameHeight - marginY, "warm");
+        return new JarColumn(columnLeft, columnRight, marginY, columnBottom, "warm");
+    }
+
+    private Rect? FindWarmBodyComponent(Mat mask)
+    {
+        using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(5, 3));
+        Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
+        using var labels = new Mat();
+        using var stats = new Mat();
+        using var centers = new Mat();
+        var count = Cv2.ConnectedComponentsWithStats(mask, labels, stats, centers);
+        var minimumWidth = Math.Max(12, mask.Width * options.MinJarWidthFraction);
+        var bestArea = mask.Width * (double)mask.Height * 0.002;
+        Rect? best = null;
+        for (var i = 1; i < count; i++)
+        {
+            var x = stats.At<int>(i, 0);
+            var y = stats.At<int>(i, 1);
+            var width = stats.At<int>(i, 2);
+            var height = stats.At<int>(i, 3);
+            var area = stats.At<int>(i, 4);
+            if (width < minimumWidth || height < Math.Max(12, mask.Height * 0.04)
+                || width < height * 0.5 || width > height * 4
+                || x <= 2 || y <= 2 || x + width >= mask.Width - 2 || area <= bestArea)
+                continue;
+            bestArea = area;
+            best = new Rect(x, y, width, height);
+        }
+        return best;
+    }
+
+    /// <summary>Column from the dough's DARK silhouette extent — the backlit-scene path:
+    /// with the LED behind the jar the dough reads as a dark mass (no usable warm color),
+    /// while the LED-lit wall passes the warm filter and hijacks the warm-extent column.
+    /// Uses the absolute dark threshold (the same statistic the band method thresholds
+    /// against), so it is immune to the dark room dominating the relative references.</summary>
+    private static JarColumn? FindJarColumnByDarkExtent(Mat gray, int frameWidth, int frameHeight, double darkBandMaxIntensity)
+    {
+        var zoneTop = (int)(frameHeight * 0.50);
+        var zoneBottom = Math.Min(frameHeight - 1, (int)(frameHeight * 0.95));
+        var minJarWidth = (int)(frameWidth * 0.04);
+        var border = Math.Max(4, frameWidth / 40);
+        var bestStart = -1;
+        var bestLength = 0;
+        var runStart = -1;
+        for (var x = border; x < frameWidth - border; x++)
+        {
+            // Bottom-contiguity: the dark run must END at the zone bottom — the dough
+            // rests on the jar base. The dark ROOM columns break at the lit shelf in
+            // front of them and never accumulate a long contiguous run from the bottom.
+            var run = 0;
+            for (var y = zoneBottom; y >= zoneTop; y--)
+            {
+                if (gray.At<byte>(y, x) < darkBandMaxIntensity) run++;
+                else break;
+            }
+            var darkEnough = run * 2 >= (zoneBottom - zoneTop); // ≥50 % of the zone dark from the bottom
+            if (darkEnough)
+            {
+                if (runStart < 0) runStart = x;
+                var length = x - runStart + 1;
+                if (length > bestLength)
+                {
+                    bestLength = length;
+                    bestStart = runStart;
+                }
+            }
+            else
+            {
+                runStart = -1;
+            }
+        }
+        if (bestStart < 0 || bestLength < minJarWidth) return null;
+        var marginY = Math.Max(2, frameHeight / 30);
+        return new JarColumn(bestStart, bestStart + bestLength - 1, marginY, frameHeight - marginY, "dark");
     }
 
     /// <summary>Column on/off decisions from a per-column mean profile: warm/dark enough, with
@@ -499,6 +981,7 @@ public sealed class JarLevelDetector(VisionOptions options)
     private Mat? ComputeVisWarmMask(Mat color, Mat gray)
     {
         ComputeTopQuarterRefs(color, gray, out var satNeutral, out var _);
+        satNeutral = Math.Min(satNeutral, options.NeutralReferenceCeiling);
         var mask = new Mat();
         using var satMap = SaturationMap(color);
         Cv2.Threshold(satMap, mask, satNeutral + options.MinWarmSaturationStep, 255, ThresholdTypes.Binary);
@@ -540,10 +1023,10 @@ public sealed class JarLevelDetector(VisionOptions options)
         Cv2.Split(color, out var channels);
         try
         {
-            var max = new Mat();
+            using var max = new Mat();
             Cv2.Max(channels[0], channels[1], max);
             Cv2.Max(max, channels[2], max);
-            var min = new Mat();
+            using var min = new Mat();
             Cv2.Min(channels[0], channels[1], min);
             Cv2.Min(min, channels[2], min);
             var spread = new Mat();
@@ -662,6 +1145,83 @@ public sealed class JarLevelDetector(VisionOptions options)
     /// when disk persistence is off (annotated bytes only) or the frame failed to decode.</summary>
     public string? LastDebugImagePath { get; private set; }
 
+
+    /// <summary>Builds the surface curve from the traced outline: median rows of the left
+    /// quarter, the middle and the right quarter, then the parabola through those three
+    /// anchors (Lagrange). The camera may be slightly rolled, so the anchors capture BOTH
+    /// the glass-bulge bow and any tilt — the curve passes through all three. Nearly
+    /// collinear anchors degrade to a straight line naturally. Resampled per column.</summary>
+    private static List<Point> BuildSurfaceArc(List<Point> points, JarColumn jarColumn)
+    {
+        var width = jarColumn.Right - jarColumn.Left;
+        var leftEnd = jarColumn.Left + width / 4;
+        var rightStart = jarColumn.Right - width / 4;
+        var leftYs = new List<int>();
+        var midYs = new List<int>();
+        var rightYs = new List<int>();
+        foreach (var p in points)
+        {
+            if (p.X <= leftEnd) leftYs.Add(p.Y);
+            else if (p.X >= rightStart) rightYs.Add(p.Y);
+            else midYs.Add(p.Y);
+        }
+        leftYs.Sort();
+        midYs.Sort();
+        rightYs.Sort();
+        var yLeft = leftYs.Count > 0 ? leftYs[leftYs.Count / 2] : MedianOr(points);
+        var yMid = midYs.Count > 0 ? midYs[midYs.Count / 2] : MedianOr(points);
+        var yRight = rightYs.Count > 0 ? rightYs[rightYs.Count / 2] : MedianOr(points);
+        var xL = jarColumn.Left + width / 8;
+        var xC = (jarColumn.Left + jarColumn.Right) / 2.0;
+        var xR = jarColumn.Right - width / 8;
+        var result = new List<Point>(jarColumn.Right - jarColumn.Left - 7);
+        for (var x = jarColumn.Left + 4; x <= jarColumn.Right - 4; x++)
+        {
+            result.Add(new Point(x, (int)Math.Round(Lagrange3(xL, yLeft, xC, yMid, xR, yRight, x))));
+        }
+        return result;
+    }
+
+    /// <summary>Median y of the whole traced outline (the straight-surface fallback).</summary>
+    private static int MedianOr(List<Point> points)
+    {
+        if (points.Count == 0) return 0;
+        var ys = new List<int>(points.Count);
+        foreach (var p in points) ys.Add(p.Y);
+        ys.Sort();
+        return ys[ys.Count / 2];
+    }
+
+    /// <summary>Value of the parabola through (x1,y1), (x2,y2), (x3,y3) at x — Lagrange's
+    /// form, exact for the three anchors and smooth in between.</summary>
+    private static double Lagrange3(double x1, double y1, double x2, double y2, double x3, double y3, double x)
+    {
+        return y1 * (x - x2) * (x - x3) / ((x1 - x2) * (x1 - x3))
+             + y2 * (x - x1) * (x - x3) / ((x2 - x1) * (x2 - x3))
+             + y3 * (x - x1) * (x - x2) / ((x3 - x1) * (x3 - x2));
+    }
+
+    /// <summary>Level row from a traced surface curve: the median y over the curve's
+    /// middle third, where the arc's bottom (the front-glass contact) lives. The median
+    /// rejects single-column spikes; the third keeps the higher side arcs out.</summary>
+    private static int CurveDeepestRow(List<Point> curve, JarColumn jarColumn)
+    {
+        var width = jarColumn.Right - jarColumn.Left;
+        var midLeft = jarColumn.Left + width / 3;
+        var midRight = jarColumn.Right - width / 3;
+        var ys = new List<int>();
+        foreach (var p in curve)
+        {
+            if (p.X >= midLeft && p.X <= midRight) ys.Add(p.Y);
+        }
+        if (ys.Count == 0)
+        {
+            foreach (var p in curve) ys.Add(p.Y);
+        }
+        ys.Sort();
+        return ys[ys.Count / 2];
+    }
+
     private void SaveDebugImage(
         Mat image,
         JarColumn? jarColumn,
@@ -669,15 +1229,25 @@ public sealed class JarLevelDetector(VisionOptions options)
         int? jarBottomY,
         int? sessionStartSurfaceY,
         DateTimeOffset now,
-        Mat? visWarm)
+        Mat? visWarm,
+        IReadOnlyList<Point>? surfaceCurve = null)
     {
         LastDebugImagePath = null;
+        if (LastDiagnostics is { } diagnostics)
+        {
+            LastDiagnostics = diagnostics with
+            {
+                JarLeftPx = jarColumn?.Left,
+                JarRightPx = jarColumn?.Right,
+                JarColumnKind = jarColumn?.Kind
+            };
+        }
         using var color = new Mat();
         Cv2.CvtColor(image, color, ColorConversionCodes.GRAY2BGR);
-        // Show what the color filter sees: orange = warm-tone pixels (the dough). Without
-        // this the debug image is a bare grayscale frame and the color-based decisions
-        // are invisible.
-        if (visWarm is not null)
+        // Show what the color filter sees: orange = warm-tone pixels (the dough). Opt-in
+        // (DebugHighlightDough): the translucent paint makes the scene hard to read for
+        // the eye — the surface curve is drawn regardless.
+        if (visWarm is not null && options.DebugHighlightDough)
         {
             using var original = color.Clone();
             using var overlay = color.Clone();
@@ -705,12 +1275,7 @@ public sealed class JarLevelDetector(VisionOptions options)
                 thickness);
         }
         if (jarColumn is not null && doughSurfaceY is not null)
-            Cv2.Line(
-                color,
-                new Point(0, doughSurfaceY.Value),
-                new Point(color.Width, doughSurfaceY.Value),
-                Scalar.Red,
-                2);
+            DrawSurfaceCurve(color, jarColumn, doughSurfaceY.Value, surfaceCurve);
         if (sessionStartSurfaceY is not null)
         {
             var y = Math.Clamp(sessionStartSurfaceY.Value, 0, color.Height - 1);
@@ -740,6 +1305,27 @@ public sealed class JarLevelDetector(VisionOptions options)
         LastDebugImagePath = filePath;
         AppendDiagnosticsLogEntry(directory, Path.GetFileName(filePath), jarColumn, doughSurfaceY, jarBottomY, sessionStartSurfaceY, now);
         PruneOldDebugFiles(directory, now);
+    }
+
+    /// <summary>Draws the traced surface curve as a red polyline (the level plane inside
+    /// the bulged glass projects as an arc). Falls back to the straight horizontal line
+    /// when no curve was traced (dark frames, pale dough without a color signal).</summary>
+    private static void DrawSurfaceCurve(Mat color, JarColumn jarColumn, int doughSurfaceY, IReadOnlyList<Point>? surfaceCurve)
+    {
+        if (surfaceCurve is { Count: > 1 })
+        {
+            for (var i = 1; i < surfaceCurve.Count; i++)
+            {
+                Cv2.Line(color, surfaceCurve[i - 1], surfaceCurve[i], Scalar.Red, 2);
+            }
+            return;
+        }
+        Cv2.Line(
+            color,
+            new Point(0, doughSurfaceY),
+            new Point(color.Width, doughSurfaceY),
+            Scalar.Red,
+            2);
     }
 
     private string ResolveDebugDirectory() =>
@@ -812,7 +1398,8 @@ public sealed class JarLevelDetector(VisionOptions options)
         Mat columnEdges,
         Mat columnGray,
         Mat columnColor,
-        (double? Mean, double? Median, double? P10, double? P90) frameStats)
+        (double? Mean, double? Median, double? P10, double? P90) frameStats,
+        bool suppressWarmPath = false)
     {
         var rowEnergy = ReduceRows(columnEdges);
         // Intensity profile from the central strip of the column only: the dough's dark
@@ -837,16 +1424,27 @@ public sealed class JarLevelDetector(VisionOptions options)
         // the jar interior (see InteriorBounds) so wall columns don't cap the fraction.
         float[]? warmCoverage = null;
         float[]? darkCoverage = null;
-        ComputeTopQuarterRefs(centralStripColor, centralStrip, out var satNeutral, out var _);
-        if (satNeutral is { } satRef)
+        if (!suppressWarmPath)
         {
-            using var satMap = SaturationMap(centralStripColor);
-            using var warmMask = new Mat();
-            Cv2.Threshold(satMap, warmMask, satRef + options.MinWarmSaturationStep, 255, ThresholdTypes.Binary);
-            warmCoverage = CoverageProfile(warmMask);
-            if (InteriorBounds(warmMask, warmCoverage) is { } warmInterior)
+            ComputeTopQuarterRefs(centralStripColor, centralStrip, out var satNeutral, out var _);
+            if (satNeutral is { } satRef)
             {
-                warmCoverage = CoverageProfile(warmMask[new Rect(warmInterior.Left, 0, warmInterior.Right - warmInterior.Left + 1, warmMask.Rows)]);
+                // The top quarter holds the condensation/smear zone above the dough; its
+                // saturation pollutes the neutral reference (observed 8-10 instead of the
+                // clean-glass 2-3) and silently stiffens the warm mask past its calibrated
+                // threshold. Cap the reference so the calibrated step stays valid.
+                satRef = Math.Min(satRef, options.NeutralReferenceCeiling);
+                // Central-strip warm coverage only positions the contour search. The
+                // reported surface comes from the lower-connected luminance outline,
+                // so saturated body pixels cannot redefine the measurement basis.
+                using var satMap = SaturationMap(centralStripColor);
+                using var warmMask = new Mat();
+                Cv2.Threshold(satMap, warmMask, satRef + options.MinWarmSaturationStep, 255, ThresholdTypes.Binary);
+                warmCoverage = CoverageProfile(warmMask);
+                if (InteriorBounds(warmMask, warmCoverage) is { } warmInterior)
+                {
+                    warmCoverage = CoverageProfile(warmMask[new Rect(warmInterior.Left, 0, warmInterior.Right - warmInterior.Left + 1, warmMask.Rows)]);
+                }
             }
         }
         var brightRef = BrightReferenceLevel(MovingAverage(rowIntensity, 7));
@@ -870,8 +1468,31 @@ public sealed class JarLevelDetector(VisionOptions options)
             options.MinAmbientBandContrast,
             options.DarkBandMaxIntensity,
             options.MinDarkBandFraction,
-            options.FrontEdgeCoverageFraction);
+            options.FrontEdgeCoverageFraction,
+            suppressWarmPath);
         LastDiagnostics = WithFrameStats(diagnostics ?? new DetectionDiagnostics("none", 0, null, null), frameStats);
+        // Exposure-flicker smoothing for the warm crossing only: the band/dark paths are
+        // already gate-protected and their signals differ in kind, so mixing them into
+        // one median would blur two different boundaries.
+        if (result is { } rawRow && diagnostics?.Method == "warm")
+        {
+            var recent = _recentWarmFronts.OrderBy(x => x).ToList();
+            var median = recent.Count > 0 ? recent[recent.Count / 2] : rawRow;
+            if (recent.Count >= 3 && rawRow - median > 50)
+            {
+                // Far below the median: the level collapsed (re-feed). Flush and take the
+                // raw reading so the new session starts immediately.
+                _recentWarmFronts.Clear();
+                _recentWarmFronts.Enqueue(rawRow);
+            }
+            else
+            {
+                _recentWarmFronts.Enqueue(rawRow);
+                while (_recentWarmFronts.Count > 9) _recentWarmFronts.Dequeue();
+                var sorted = _recentWarmFronts.OrderBy(x => x).ToList();
+                result = sorted[sorted.Count / 2];
+            }
+        }
         return result;
     }
 
@@ -950,8 +1571,26 @@ public sealed class JarLevelDetector(VisionOptions options)
     private static int FindJarBottom(Mat columnEdges, Mat columnGray, int doughTop, int fallbackBottom)
     {
         var bandStart = Math.Max(doughTop + 2, fallbackBottom - Math.Max(4, fallbackBottom / 4));
-        var lowerEdge = FindJarBottomFromHorizontalEdge(columnEdges, bandStart, fallbackBottom);
-        return lowerEdge ?? fallbackBottom;
+        var profileBottom = FindJarBottomFromProfile(columnGray, bandStart, fallbackBottom);
+        if (profileBottom is not null) return profileBottom.Value;
+        return FindJarBottomFromHorizontalEdge(columnEdges, bandStart, fallbackBottom) ?? fallbackBottom;
+    }
+
+    // The ambient-lit glass foot is a dark shadow followed by the lighter shelf.
+    // Reading its lower edge also works when defocus leaves too little Canny energy.
+    private static int? FindJarBottomFromProfile(Mat gray, int start, int end)
+    {
+        var profile = MovingAverage(ReduceRowsMedian(gray), 5);
+        var bestContrast = 8.0;
+        int? bottom = null;
+        for (var y = Math.Max(start + 3, 3); y <= Math.Min(end - 3, profile.Length - 4); y++)
+        {
+            var contrast = profile[y + 3] - profile[y - 3];
+            if (contrast <= bestContrast) continue;
+            bestContrast = contrast;
+            bottom = Math.Min(end, y + 2);
+        }
+        return bottom;
     }
 
     private static int? FindJarBottomFromHorizontalEdge(Mat columnEdges, int bandStart, int fallbackBottom)
@@ -1044,29 +1683,50 @@ public sealed class JarLevelDetector(VisionOptions options)
         double minAmbientContrast,
         double darkBandMaxIntensity,
         double minDarkBandFraction,
-        double frontEdgeCoverageFraction)
+        double frontEdgeCoverageFraction,
+        bool suppressWarmPath = false)
     {
         var longRun = (int)Math.Ceiling(Math.Max(4, rowEnergy.Count * minDarkBandFraction));
-        var bandTop = FindDoughBandTop(
-            rowIntensity,
-            out var bandContrast,
-            strongContrast,
-            minAmbientContrast,
-            darkBandMaxIntensity,
-            minDarkBandFraction);
-        // The warm (color) boundary IS the surface: the pale stir-smear/frost band above
-        // the dough body is static residue on the glass — the dark boundary tracks it and
-        // would freeze the level while the dough rises past it. The warm crossing = the
-        // colored body's top = the true level. No colored body (fresh pale feed): fall
-        // through to the dark band, which then reads the smear boundary — biased high,
-        // but present, and re-baselined when the color returns.
-        var warmFront = FrontEdgeByWarmCoverage(warmCoverage, longRun);
-        if (warmFront is not null)
+        // In backlit/night scenes the silhouette is contiguous with the jar base — scan
+        // for it bottom-up (the top-down scan fires on dark glass patches ABOVE the glow).
+        var bandTop = suppressWarmPath
+            ? FindDoughBandTopBacklit(rowIntensity, out var bandContrast)
+            : FindDoughBandTop(
+                rowIntensity,
+                out bandContrast,
+                strongContrast,
+                minAmbientContrast,
+                darkBandMaxIntensity,
+                minDarkBandFraction);
+        // Warm and dark profiles propose an anchor, not the final level. A colored
+        // body with a failed crossing stays unavailable rather than switching to a
+        // different boundary. The accepted column is traced separately below.
+        if (!suppressWarmPath)
         {
-            var snapped = SnapToEdge(rowEnergy, warmFront.Value);
-            var bodyContrast = MeanCoverage(warmCoverage, warmFront.Value, Math.Max(8, longRun / 2));
-            diagnostics = new DetectionDiagnostics("warm", bodyContrast, warmFront, snapped);
-            return snapped;
+            var warmFront = FrontEdgeByWarmCoverage(warmCoverage, longRun, frontEdgeCoverageFraction);
+            var warmPlateau = WarmCoveragePlateau(warmCoverage);
+            if (warmFront is null && warmPlateau >= 0.5)
+            {
+                diagnostics = new DetectionDiagnostics("none", 0, null, null);
+                return null;
+            }
+            // Backlit-scene guard: with the LED behind the jar the warm-toned GLOW above the
+            // dough passes the warm mask and the crossing lands on the glow's top — 200+ px
+            // above the real dough (observed live: readings 108-250 while the silhouette
+            // sits at ~470). The dark dough silhouette against the glow is the band signal:
+            // when a band top exists far BELOW the warm crossing, the warm evidence is the
+            // glow, not the dough — fall through to the band path.
+            if (warmFront is not null && bandTop is not null && warmFront.Value < bandTop.Value - 60)
+            {
+                warmFront = null;
+            }
+            if (warmFront is not null)
+            {
+                var snapped = SnapToEdge(rowEnergy, warmFront.Value);
+                var bodyContrast = MeanCoverage(warmCoverage, warmFront.Value, Math.Max(8, longRun / 2));
+                diagnostics = new DetectionDiagnostics("warm", bodyContrast, warmFront, snapped);
+                return snapped;
+            }
         }
         // Qualification (contrast + darkness + length rules) lives in FindDoughBandTop;
         // a non-null result is already accepted.
@@ -1081,23 +1741,46 @@ public sealed class JarLevelDetector(VisionOptions options)
         // Edge fallback: the strongest edge row must sit on actual dough — a dark/warm
         // coverage floor rejects condensation-line or glare edges high above the dough
         // (observed live: the droplet boundary at row 377 while the dough starts at 470).
-        var edgeRow = FindDoughSurfaceFromEnergy(rowEnergy);
-        var edgeSupported = edgeRow is not null
-            && MeanCoverage(darkCoverage, edgeRow.Value, Math.Max(8, longRun / 4)) >= 0.4;
-        diagnostics = new DetectionDiagnostics(
-            edgeSupported ? "edge" : "none",
-            bandContrast,
-            bandTop,
-            edgeSupported ? edgeRow : null);
-        return edgeSupported ? edgeRow : null;
+        // NOT in backlit/night scenes: the strongest edge there is the room→glow boundary
+        // or wall texture, far above the dough (observed: readings 174-292 vs ~470).
+        if (!suppressWarmPath)
+        {
+            var edgeRow = FindDoughSurfaceFromEnergy(rowEnergy);
+            var edgeSupported = edgeRow is not null
+                && MeanCoverage(darkCoverage, edgeRow.Value, Math.Max(8, longRun / 4)) >= 0.4;
+            diagnostics = new DetectionDiagnostics(
+                edgeSupported ? "edge" : "none",
+                bandContrast,
+                bandTop,
+                edgeSupported ? edgeRow : null);
+            return edgeSupported ? edgeRow : null;
+        }
+        diagnostics = new DetectionDiagnostics("none", bandContrast, bandTop, null);
+        return bandTop;
+    }
+
+    /// <summary>Peak dough-coverage fraction of the warm profile (searching from 5 % of
+    /// the rows down), the same statistic the warm crossing thresholds against. Distinguishes
+    /// "colored body present" (≥ 0.5) from a fresh pale feed with no usable color.</summary>
+    private static double WarmCoveragePlateau(float[]? coverage)
+    {
+        if (coverage is null || coverage.Length == 0) return 0;
+        var searchStart = Math.Min(coverage.Length - 1, (int)(coverage.Length * 0.05));
+        var plateau = 0f;
+        for (var y = searchStart; y < coverage.Length; y++)
+        {
+            if (coverage[y] > plateau) plateau = coverage[y];
+        }
+        return plateau;
     }
 
     /// <summary>Front edge from the warm-coverage profile: the top of the LONGEST run of rows
-    /// whose warm coverage reaches 60% of the plateau (the saturated dough body). The pale
+    /// whose warm coverage reaches the solid-onset fraction of the plateau. The pale
     /// stir-smudge above the dough has warm patches, but they never form a sustained run —
-    /// the body does. Returns null when the frame has no colored dough body (plateau below
-    /// 50% — pale fresh feed), letting the dark-band path take over.</summary>
-    private static int? FrontEdgeByWarmCoverage(float[]? coverage, int longRun)
+    /// the body does (with small dips bridged). Returns null on a transient crossing
+    /// failure even when a colored body is present — the caller decides whether to skip
+    /// the frame or fall back to the dark band.</summary>
+    private static int? FrontEdgeByWarmCoverage(float[]? coverage, int longRun, double frontEdgeCoverageFraction)
     {
         if (coverage is null || coverage.Length == 0) return null;
         var n = coverage.Length;
@@ -1108,29 +1791,44 @@ public sealed class JarLevelDetector(VisionOptions options)
             if (coverage[y] > plateau) plateau = coverage[y];
         }
         if (plateau < 0.5f) return null;
-        var threshold = 0.6 * plateau;
+        // High solid-onset threshold over the strip profile: the dough's level plane
+        // projects through the bulged glass as an arc whose lowest point is the
+        // front-glass center — the user-confirmed surface ("am Rand flacher, vorne
+        // tiefer, es müsste eine Kurve sein"). A high threshold (the same fraction the
+        // dark path uses) skips the shallow side arcs of the ramp and lands on the
+        // front-center level; lower thresholds land mid-arc and read too shallow.
+        var threshold = frontEdgeCoverageFraction * plateau;
         var minSolid = Math.Max(4, longRun / 2);
-        var left = -1;
-        var right = -1;
+        // The body's coverage dips briefly below any high threshold (dark streaks,
+        // bubbles: 0.84-0.90 for a few rows). Bridges of up to 6 rows keep the run
+        // continuous — without this, a high threshold splits the body and the crossing
+        // falls through to the band path, whose boundary reads on a different basis.
         var runStart = -1;
-        var best = 0;
+        var gap = 0;
+        var bestStart = -1;
+        var bestLength = 0;
         for (var y = searchStart; y <= n; y++)
         {
             var on = y < n && coverage[y] >= threshold;
-            if (on && runStart < 0) runStart = y;
-            if (!on && runStart >= 0)
+            if (on)
             {
-                if (y - runStart > best)
+                if (runStart < 0) runStart = y;
+                gap = 0;
+                var length = y - runStart + 1;
+                if (length > bestLength)
                 {
-                    best = y - runStart;
-                    left = runStart;
-                    right = y - 1;
+                    bestLength = length;
+                    bestStart = runStart;
                 }
-                runStart = -1;
+            }
+            else if (runStart >= 0)
+            {
+                gap++;
+                if (gap > 6) runStart = -1;
             }
         }
-        if (left < 0 || best < minSolid) return null;
-        return left;
+        if (bestStart < 0 || bestLength < minSolid) return null;
+        return bestStart;
     }
 
     /// <summary>Mean coverage over [start .. start+length) (clamped to the profile). A warm
@@ -1251,6 +1949,17 @@ public sealed class JarLevelDetector(VisionOptions options)
     /// top quarter is implausibly dark (frame mostly covered by something else).</summary>
     private static double? BrightReferenceLevel(double[] smoothed)
     {
+        var mode = TopQuarterMode(smoothed);
+        // The wall/glass above the dough must actually be bright for this method to
+        // apply; otherwise the frame shows something we don't understand.
+        return mode is { } level && level >= 100 ? (double?)level : null;
+    }
+
+    /// <summary>Modal value of the profile's top quarter WITHOUT an absolute brightness
+    /// gate — the backlit scenes use it as the glow reference: the glow is bright
+    /// RELATIVE to the dough silhouette at any exposure level.</summary>
+    private static double? TopQuarterMode(double[] smoothed)
+    {
         var quarter = Math.Max(4, smoothed.Length / 4);
         var hist = new int[256];
         for (var y = 0; y < quarter && y < smoothed.Length; y++)
@@ -1267,9 +1976,39 @@ public sealed class JarLevelDetector(VisionOptions options)
                 best = i;
             }
         }
-        // The wall/glass above the dough must actually be bright for this method to
-        // apply; otherwise the frame shows something we don't understand.
-        return bestCount > 0 && best >= 100 ? (double?)best : null;
+        return bestCount > 0 ? (double?)best : null;
+    }
+
+    /// <summary>Backlit variant of the band scan: the dough's dark silhouette is CONTIGUOUS
+    /// with the jar base, so the scan walks UP from inside the body to the first sustained
+    /// bright row (the glow behind the glass). The day-scene top-down scan cannot be used
+    /// here: it fires on dark glass patches floating ABOVE the glow (observed: readings
+    /// 108-250 while the silhouette sits at ~470). Returns null when the scan start is not
+    /// inside a dark body (nothing trustworthy to walk from).</summary>
+    public static int? FindDoughBandTopBacklit(
+        IReadOnlyList<float> rowIntensity,
+        out double contrast,
+        double minAmbientContrast = 18.0)
+    {
+        contrast = 0;
+        var smoothed = MovingAverage(rowIntensity, 7);
+        var n = smoothed.Length;
+        if (n < 10) return null;
+        // RELATIVE reference (no absolute brightness gate): the glow above the dough is
+        // the bright signal at any exposure level — the day-scene gate (mode ≥ 100) would
+        // reject the dim backlit frames entirely (observed: no readings after the LED
+        // went on at dusk).
+        var brightLevel = TopQuarterMode(smoothed);
+        if (brightLevel is null) return null;
+        var line = brightLevel.Value - minAmbientContrast;
+        var scanStart = Math.Min(n - 2, (int)(n * 0.85));
+        if (smoothed[scanStart] >= line) return null;
+        var y = scanStart;
+        while (y > 1 && smoothed[y] < line) y--;
+        var top = y + 1;
+        if (top >= n) return null;
+        contrast = brightLevel.Value - smoothed[top];
+        return top;
     }
 
     public static int? FindDoughSurfaceFromEnergy(IReadOnlyList<float> rowEnergy)

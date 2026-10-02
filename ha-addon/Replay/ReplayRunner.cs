@@ -24,6 +24,9 @@ public static class ReplayRunner
     public static async Task<int> RunAsync(string[] args)
     {
         string? folder = null, outDir = null, configArg = null, roiArg = null;
+        var stride = 1;
+        double? intervalMinutes = null;
+        var utcTimestamps = false;
         for (var i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -36,6 +39,21 @@ public static class ReplayRunner
                     break;
                 case "--roi" when i + 1 < args.Length:
                     roiArg = args[++i];
+                    break;
+                case "--stride" when i + 1 < args.Length:
+                    stride = Math.Max(1, int.Parse(args[++i]));
+                    break;
+                case "--interval-minutes" when i + 1 < args.Length:
+                    if (!double.TryParse(args[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out var minutes)
+                        || !double.IsFinite(minutes) || minutes <= 0)
+                    {
+                        PrintUsage("--interval-minutes requires a positive number.");
+                        return 2;
+                    }
+                    intervalMinutes = minutes;
+                    break;
+                case "--timestamps-utc":
+                    utcTimestamps = true;
                     break;
                 default:
                     if (args[i].StartsWith('-'))
@@ -67,6 +85,43 @@ public static class ReplayRunner
         Directory.CreateDirectory(visionOptions.DebugOutputDirectory);
 
         var frames = CollectFrames(folder);
+        if (utcTimestamps)
+        {
+            for (var i = 0; i < frames.Count; i++)
+            {
+                if (frames[i].FromFilename)
+                    frames[i] = frames[i] with { Time = new DateTimeOffset(frames[i].Time.DateTime, TimeSpan.Zero) };
+            }
+        }
+        if (intervalMinutes is { } interval)
+        {
+            if (stride != 1)
+            {
+                PrintUsage("Use either --stride or --interval-minutes, not both.");
+                return 2;
+            }
+            var sampled = new List<Frame>();
+            var origin = frames[0].Time;
+            long previousSlot = -1;
+            foreach (var frame in frames)
+            {
+                // Fixed clock buckets tolerate millisecond capture jitter. Requiring
+                // each next frame to be >= last + interval drops almost every other
+                // nominal one-minute frame when its fractional timestamp is earlier.
+                var slot = (long)Math.Floor((frame.Time - origin).TotalMinutes / interval);
+                if (slot == previousSlot) continue;
+                sampled.Add(frame);
+                previousSlot = slot;
+            }
+            frames = sampled;
+        }
+        else if (stride > 1)
+        {
+            // Emulate the live add-on's sampling interval: the detector's temporal
+            // smoothing windows are defined in samples, so a replay at archive cadence
+            // (~1 frame/min) behaves differently from the live 10-minute cadence.
+            frames = frames.Where((_, index) => index % stride == 0).ToList();
+        }
         var mtimeFallback = frames.Count(f => !f.FromFilename);
         Console.WriteLine($"Replay: {frames.Count} frames from {frames[0].Time:yyyy-MM-dd HH:mm} to {frames[^1].Time:yyyy-MM-dd HH:mm}");
         Console.WriteLine($"Output: {Path.GetFullPath(outPath)}");
@@ -127,6 +182,9 @@ public static class ReplayRunner
                 DoughTopPx: measurement?.DoughTopPx,
                 JarTopPx: measurement?.JarTopPx,
                 JarBottomPx: measurement?.JarBottomPx,
+                JarLeftPx: diagnostics?.JarLeftPx,
+                JarRightPx: diagnostics?.JarRightPx,
+                JarColumnKind: diagnostics?.JarColumnKind,
                 DoughHeightPx: measurement?.DoughHeightPx,
                 Reading: measurement is null ? "" : reading is null ? "unavailable" : "ok",
                 RisePercent: reading?.RisePercent,
@@ -185,6 +243,9 @@ public static class ReplayRunner
         DoughTopPx: null,
         JarTopPx: null,
         JarBottomPx: null,
+        JarLeftPx: null,
+        JarRightPx: null,
+        JarColumnKind: null,
         DoughHeightPx: null,
         Reading: "",
         RisePercent: null,
@@ -221,7 +282,7 @@ public static class ReplayRunner
         var sb = new StringBuilder();
         sb.AppendLine(
             "file,time,time_source,outcome,method,frame_mean,frame_median,frame_p10,frame_p90,band_contrast,"
-            + "band_top_row,final_row,dough_top_px,jar_top_px,jar_bottom_px,dough_height_px,"
+            + "band_top_row,final_row,dough_top_px,jar_top_px,jar_bottom_px,jar_left_px,jar_right_px,jar_column_kind,dough_height_px,"
             + "reading,rise_percent,rise_rate_pct_per_h,predicted_peak_percent,"
             + "predicted_peak_time,peaked,new_session,debug_image");
         foreach (var r in rows)
@@ -243,6 +304,9 @@ public static class ReplayRunner
                 N(r.DoughTopPx),
                 N(r.JarTopPx),
                 N(r.JarBottomPx),
+                r.JarLeftPx?.ToString(CultureInfo.InvariantCulture) ?? "",
+                r.JarRightPx?.ToString(CultureInfo.InvariantCulture) ?? "",
+                r.JarColumnKind ?? "",
                 N(r.DoughHeightPx),
                 r.Reading,
                 N(r.RisePercent),
@@ -288,7 +352,7 @@ public static class ReplayRunner
     private static void PrintUsage(string error)
     {
         Console.Error.WriteLine($"Error: {error}");
-        Console.Error.WriteLine("Usage: dotnet run -- replay <folder> [--out dir] [--config appsettings.json] [--roi x,y,w,h]");
+        Console.Error.WriteLine("Usage: dotnet run -- replay <folder> [--out dir] [--config appsettings.json] [--roi x,y,w,h] [--stride N | --interval-minutes N] [--timestamps-utc]");
     }
 
     private static string? ResolveConfigPath(string? configArg)
@@ -355,11 +419,21 @@ public static class ReplayRunner
             MinJarWidthFraction = src.MinJarWidthFraction,
             MinFrameIntensity = src.MinFrameIntensity,
             MinFrameContrast = src.MinFrameContrast,
+            StrongBandContrast = src.StrongBandContrast,
+            MinAmbientBandContrast = src.MinAmbientBandContrast,
+            DarkBandMaxIntensity = src.DarkBandMaxIntensity,
+            MinWarmSaturationStep = src.MinWarmSaturationStep,
+            WarmColumnSaturationStep = src.WarmColumnSaturationStep,
+            WarmColumnMinFraction = src.WarmColumnMinFraction,
+            NeutralReferenceCeiling = src.NeutralReferenceCeiling,
+            MinDarkBandFraction = src.MinDarkBandFraction,
+            FrontEdgeCoverageFraction = src.FrontEdgeCoverageFraction,
+            DebugRetentionHours = src.DebugRetentionHours,
             DebugSaveAnnotatedImages = true,
             DebugOutputDirectory = debugDir,
-            // Replay is the tuning tool: always show the color filter's dough mask so the
-            // surface line can be checked against it visually.
-            DebugHighlightDough = true,
+            // Mirror the live default: the overlay is opt-in. The surface curve is drawn
+            // regardless, so the detection stays visible without painting the scene.
+            DebugHighlightDough = false,
             // Replay must never touch the live addon's persisted jar geometry.
             GeometryStateFilePath = null
         };

@@ -20,4 +20,8 @@
     <ProjectReference Include="..\ha-addon\SourdoughMonitor.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="Fixtures\*.jpg" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

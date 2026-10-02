@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.46
+
+- Detect the backlit jar/base and actual dough front instead of LED fades or wall
+  reflections; keep supported geometry across lighting changes and resizes.
+- Stabilize pale-dough detection and smaller-jar search windows; skip ambiguous glare.
+- Predict the practical maximum only after observed slowdown, without inventing a
+  future peak after the plateau.
+- Add the local calibration/review loop, UTC and clock-based replay, and regressions.
+- After updating, press **Reset** once to establish the new measurement baseline.
+
 ## 0.1.45
 
 - Warm threshold calibrated (step 9): the surface line lands on the user-confirmed dough

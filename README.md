@@ -73,15 +73,16 @@ Set it in the add-on options or via `Monitor:Frigate:SnapshotArchiveDirectory` i
 
 ```bash
 cd ha-addon
-dotnet run -- replay <folder-with-jpgs> [--out replay-out] [--config appsettings.json] [--roi x,y,w,h]
+dotnet run -- replay <absolute-image-folder> --out <new-output-folder> [--config appsettings.json] [--roi x,y,w,h] [--stride N | --interval-minutes N] [--timestamps-utc]
 ```
 
 The replay runs every frame through the live detector (same code path as the add-on) and
 writes to the output directory:
 
-- `readings.csv` — one row per frame: outcome (`detected` / `dark_frame` / `no_surface` /
-  `decode_failed`), method (`band` / `edge`), lighting stats (mean/median/P10/P90), dough
-  top/bottom/height, tracker gate decision, rise %, rate, predicted peak
+- `readings.csv` — one row per frame: outcome (`detected` / `dark_frame` / `no_jar` /
+  `no_surface` / `decode_failed`), method (`warm` / `backlit` / `band` / `edge`), lighting
+  statistics, jar bounds and geometry kind, dough top/base/height, analyzer gate, rise,
+  rate, and predicted practical maximum
 - `summary.json` — aggregate counts, method distribution, final growth/reading state
 - `report.html` — rise curve with day markers, outcome timeline (dark frames marked), anomaly
   table and every annotated debug frame inline
@@ -89,6 +90,72 @@ writes to the output directory:
 Frames are timestamped from their file names (addon archive, Frigate/HA exports and typical
 camera names like `IMG_2026-09-28_12-00-00.jpg` all parse); files without a parseable name
 fall back to modification time and are flagged in the CSV.
+
+Use `--timestamps-utc` for the gathered HA archive (its diagnostics carry `+00:00`).
+The default interprets filename clocks in the replay host's local timezone. Use
+`--interval-minutes 10` to emulate a ten-minute sampling cycle even when archive
+cadence varies; `--stride` samples file indices instead. Replay disables persistent
+geometry/session state and leaves the translucent dough overlay off.
+
+## Expensive local calibration loop
+
+The implementation plan and acceptance gates are in [DETECTION_PLAN.md](DETECTION_PLAN.md).
+The offline model uses scene-wide geometry, dynamic-programming contour optimization,
+robust curve fitting, and bidirectional temporal support. It is deliberately non-causal;
+the add-on remains a causal, lighter C# detector.
+
+From the repository root:
+
+```bash
+python -m pip install -r tools/requirements.txt
+python tools/oracle.py sync
+python tools/oracle.py segment
+python tools/oracle.py geometry
+python tools/oracle.py tune
+dotnet build ha-addon
+python tools/oracle.py run --parameters corpus/tuned_parameters.json --every-frame --out tmp-calibration-new
+```
+
+`sync` freezes raw images and diagnostics in private `corpus/`, with SHA-256 hashes and
+a timestamped manifest. `--source` and `--corpus` select different archives. On a new
+corpus, review full frames and create `references.json` before `tune`/`compare`; `infer`
+and `preview` can propose contours without reviewed accuracy references. Reference
+entries record `file`, `split` (`calibration` or `validation`), `regime`, annotation
+`source`, a `surface_interval: [low, high]`, and optional `jar` bounds/tolerance. Empty
+or unlit frames use `detectable: false`. Only calibration entries seed geometry/tuning.
+
+Outputs:
+
+- `corpus/predictions.jsonl`: offline predictions, raw levels, uncertainty, and support.
+  **Not ground truth**; independently reviewed intervals are the accuracy reference.
+- `corpus/preview/index.html`: full-frame annotated previews with links to raw images.
+- `corpus/tuning.json`: calibration-selected parameters and separate holdout results.
+- `<output>/evaluation.json`: reviewed-reference errors/misses/false positives/geometry
+  errors, plus offline/live agreement explicitly labeled as **not accuracy**.
+- `<output>/report.html`: the actual C# replay and causal growth series.
+
+For a live-cadence run, omit `--every-frame` and select `--interval-minutes 10` (default).
+Each replay uses a new output directory; old evidence is retained. Raw images and
+generated artifacts are ignored by Git. Six small real-photo regression fixtures
+cover backlight/wall, competing rims, pale-dough, smaller-jar, base-edge, and empty scenes.
+
+The current corpus validates one physical jar across several camera positions,
+ambient/backlit day/night, and geometric stress transforms. It does not certify
+unseen vessels, materials, recipes, or arbitrary viewpoints. Add reviewed examples
+for new setups before claiming their accuracy. Deployment remains approval-gated;
+reset the old growth session when changing the measurement basis.
+
+## Maximum prediction confidence
+
+A flat lag phase or accelerating segment alone does not identify a maximum. Predictions
+remain unavailable until meaningful rise and sustained slowdown are observed. The
+sigmoid may reach its practical maximum in the past; forcing a future ETA would invent
+continued growth after the plateau. Once the practical peak is confirmed, the peaked
+sensor is set and the ETA is withdrawn. Camera-coordinate changes reset the baseline.
+
+Controlled growth-curve verification is not a backtest of actual fermentation timing.
+That requires a camera-stable recorded rise and an independently observed peak.
+
 
 ## Camera load & live stream
 
@@ -112,11 +179,12 @@ and snapshots at once). Remedies, in order of effect:
 
 ## Dark-frame gate
 
-Frames whose 90th-percentile intensity is below `Vision:MinFrameIntensity` (default 25) or
-whose intensity spread (P90−P10) is below `Vision:MinFrameContrast` (default 30) are rejected
-as `dark_frame` — night snapshots without backlight carry no usable contrast and would
-otherwise feed noise into the growth series. A backlit jar in a dark room still passes, so
-backlit night sessions keep measuring.
+Without a recognized light source, frames whose P90 intensity is below
+`Vision:MinFrameIntensity` (25) or P90−P10 spread below `Vision:MinFrameContrast` (30)
+are rejected. A compact LED-lit jar can occupy less than ten percent of a dark frame;
+its source and separate glass foot are checked before this global gate. Detection
+then follows the lower-connected dough body, not the hotspot's fade. Insufficient
+boundary evidence still returns no measurement rather than inventing a surface.
 
 ## Configuration (appsettings.json)
 

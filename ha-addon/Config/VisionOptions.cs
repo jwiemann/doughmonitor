@@ -54,6 +54,15 @@ public sealed class VisionOptions
     /// reflection streaks on the glass flanks; 12 loses ~80px of jar on each side).</summary>
     public double WarmColumnSaturationStep { get; init; } = 6.0;
 
+    /// <summary>Upper bound for the neutral saturation reference measured from the frame's
+    /// top quarter. The condensation/smear zone above the dough sits in that quarter and
+    /// pollutes the reference (observed 8-10 instead of the clean-glass 2-3), silently
+    /// stiffening the warm mask past its calibrated threshold — the surface crossing then
+    /// wanders between the dough skin and the saturated body. The cap pins the effective
+    /// mask threshold (reference + MinWarmSaturationStep) to the user-confirmed level
+    /// (~11 on the max−min spread) on every frame regardless of smear wetness.</summary>
+    public double NeutralReferenceCeiling { get; init; } = 2.0;
+
     /// <summary>Minimum fraction of warm zone rows for a column to count as jar interior.
     /// Calibrated on real frames (0.55); the warm table strip below the jar stays far
     /// below it.</summary>
@@ -64,12 +73,11 @@ public sealed class VisionOptions
     /// shadow, lettering) do not.</summary>
     public double MinDarkBandFraction { get; init; } = 0.2;
 
-    /// <summary>Front-edge rule: through the cylindrical jar glass the dough level at the
-    /// BACK wall appears higher than at the FRONT. The surface row is therefore the first
-    /// row where at least this fraction of the strip width is dough (warm or dark) — the
-    /// front-center level — instead of the row-median crossing, which flips at the back
-    /// edge. Calibrated on the real post-feeding frame (back edge 445, front edge ~575).</summary>
-    public double FrontEdgeCoverageFraction { get; init; } = 0.85;
+    /// <summary>Warm-coverage crossing used only to anchor the surface search window.
+    /// The calibrated 0.6 crossing includes the pale upper dough; larger fractions
+    /// select its saturated interior. The final level is the traced luminance boundary,
+    /// not this crossing (confirmed daylight reference: about row 475).</summary>
+    public double FrontEdgeCoverageFraction { get; init; } = 0.6;
 
     /// <summary>Persists the established warm-extent jar column (left/right px). On restart
     /// the detector seeds its window from it, so a camera move that happened while the

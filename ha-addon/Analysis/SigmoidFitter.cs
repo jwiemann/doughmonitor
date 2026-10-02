@@ -66,16 +66,12 @@ public static class SigmoidFitter
             var diff = predicted - h[i];
             sse += diff * diff;
         }
-        // Physics constraints. The fitter only runs while the dough is still rising, so
-        // the plateau must exceed everything observed and the ~88%-of-plateau peak must
-        // lie in the future. Without these, Nelder-Mead settles on "plateau = current
-        // value, inflection in the past" — a perfect fit to the partial segment that
-        // predicts a peak that has already happened.
-        if (l < maxH * 1.02)
-            sse += Math.Pow(maxH * 1.02 - l, 2) * t.Length;
-        var peakTime = t0 + 2.0 / k;
-        if (peakTime < t[^1])
-            sse += Math.Pow(t[^1] - peakTime, 2) * maxH * maxH;
+        // A fitted plateau cannot lie below observed rise. Its practical peak can
+        // legitimately be in the past: forcing a future ETA invents further growth
+        // once the actual plateau is reached. Publication confidence is gated by the
+        // analyzer's observed slowdown, not by distorting the fitted curve.
+        if (l < maxH)
+            sse += Math.Pow(maxH - l, 2) * t.Length;
         return sse;
     }
 }

@@ -26,9 +26,9 @@ public sealed class AnalysisOptions
     /// <summary>Rise-rate slope (%/h) at or below which the curve is considered flat.</summary>
     public double FlatSlopePercentPerHour { get; init; } = 0.5;
 
-    /// <summary>Minimum observed rise (%) required before a flat/falling slope can be
-    /// interpreted as "peaked" rather than "still in the lag phase". Only used as a
-    /// fallback when no sigmoid fit is available yet.</summary>
+    /// <summary>Minimum observed rise (%) before trusting a maximum forecast or declaring
+    /// a flat/falling curve peaked. Small lag-phase changes or exposure drift must not
+    /// produce a baking-ready signal.</summary>
     public double MinRisePercentForPeak { get; init; } = 25;
 
     /// <summary>Physical plausibility gate: dough cannot rise or fall faster than this many

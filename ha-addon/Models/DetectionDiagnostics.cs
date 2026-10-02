@@ -15,4 +15,11 @@ public sealed record DetectionDiagnostics(string Method, double BandContrast, in
     /// is usable when it contains a sufficiently bright region (lit jar) even if the room
     /// around it is dark (night with backlight).</summary>
     public double? FrameP90 { get; init; }
+
+    /// <summary>Jar geometry used for this frame, including failed surface searches.</summary>
+    public int? JarLeftPx { get; init; }
+
+    public int? JarRightPx { get; init; }
+
+    public string? JarColumnKind { get; init; }
 }

@@ -30,6 +30,7 @@ public sealed class RiseAnalyzer
     private DateTimeOffset? _lastMeasurementTime;
     private int _implausibleStreak;
     private int _collapseStreak;
+    private double _maximumSlope;
 
     public RiseAnalyzer(AnalysisOptions options)
     {
@@ -104,8 +105,11 @@ public sealed class RiseAnalyzer
         _collapseStreak = 0;
         _samples.Add(new Sample(m.Time, risePercent));
         var slope = ComputeWindowSlope(m.Time);
-        if (slope is not null)
-            _slopes.Add(new SlopeSample(m.Time, slope.Value));
+        if (slope is { } rate)
+        {
+            _slopes.Add(new SlopeSample(m.Time, rate));
+            _maximumSlope = Math.Max(_maximumSlope, rate);
+        }
         SigmoidFit? fit = null;
         if (!_peaked && _samples.Count >= _options.MinSamplesForFit)
         {
@@ -114,7 +118,9 @@ public sealed class RiseAnalyzer
                 fit = null;
         }
         if (fit is not null) _lastFit = fit;
+        if (fit is not null && !ForecastIsInformative(fit, m.Time)) fit = null;
         if (slope is not null) UpdatePeakState(fit);
+        if (_peaked) fit = null;
         SaveState();
         return new RiseReading(
             m.Time,
@@ -125,6 +131,23 @@ public sealed class RiseAnalyzer
             _peaked,
             NewSession: false,
             SessionStart: _sessionStart);
+    }
+
+    private bool ForecastIsInformative(SigmoidFit fit, DateTimeOffset now)
+    {
+        var count = Math.Max(1, _options.PeakConfirmWindows);
+        if (_slopes.Count < count + 1 || _samples[^1].RisePercent < _options.MinRisePercentForPeak)
+            return false;
+        if ((now - _sessionStart).TotalHours < fit.T0 || _maximumSlope <= 0
+            || _slopes[^1].Slope > _maximumSlope * 0.95)
+            return false;
+        // An accelerating segment does not identify a maximum. Require a sustained,
+        // positive but declining rise rate before exposing the extrapolation.
+        for (var i = _slopes.Count - count; i < _slopes.Count; i++)
+        {
+            if (_slopes[i].Slope <= 0 || _slopes[i].Slope > _slopes[i - 1].Slope) return false;
+        }
+        return true;
     }
 
     private double Smooth(double rawHeightPx)
@@ -188,16 +211,20 @@ public sealed class RiseAnalyzer
 
     private void UpdatePeakState(SigmoidFit? fit)
     {
-        if (_peaked || _slopes.Count < _options.PeakConfirmWindows) return;
-        var flatOrFalling = _slopes.TakeLast(_options.PeakConfirmWindows)
-            .All(s => s.Slope <= _options.FlatSlopePercentPerHour);
-        if (!flatOrFalling) return;
+        var count = Math.Max(1, _options.PeakConfirmWindows);
+        if (_peaked || _slopes.Count < count) return;
         var maxRise = _samples.Max(s => s.RisePercent);
-        // The minimum observed rise gates the flag itself — a fitted plateau cannot lower
-        // it: a degenerate fit on flat lag-phase data (plateau ≈ current value, relative
-        // error ≈ 0) would otherwise declare "peaked" at a 6% rise — observed live. The
-        // fit still drives the ETA/peak sensors via PredictedPeakPercent.
-        _peaked = maxRise >= _options.MinRisePercentForPeak;
+        if (maxRise < _options.MinRisePercentForPeak) return;
+        var flatOrFalling = true;
+        for (var i = _slopes.Count - count; i < _slopes.Count; i++)
+            if (_slopes[i].Slope > _options.FlatSlopePercentPerHour) flatOrFalling = false;
+        var practicalPeak = fit is not null && _samples.Count >= count;
+        if (fit is not null)
+        {
+            for (var i = _samples.Count - count; i < _samples.Count; i++)
+                if (_samples[i].RisePercent < fit.L * _options.PeakFraction) practicalPeak = false;
+        }
+        _peaked = flatOrFalling || practicalPeak;
     }
 
     private void ResetSession(DateTimeOffset start, double? baselinePx)
@@ -210,6 +237,7 @@ public sealed class RiseAnalyzer
         _peaked = false;
         _lastFit = null;
         _collapseStreak = 0;
+        _maximumSlope = 0;
     }
 
     private void SaveState()
@@ -240,6 +268,8 @@ public sealed class RiseAnalyzer
             _samples.AddRange(state.Samples);
             _slopes.Clear();
             _slopes.AddRange(state.Slopes);
+            _maximumSlope = 0;
+            foreach (var slope in _slopes) _maximumSlope = Math.Max(_maximumSlope, slope.Slope);
             _baselineDoughHeightPx = state.BaselineDoughHeightPx;
             _sessionStart = state.SessionStart;
             _peaked = state.Peaked;
