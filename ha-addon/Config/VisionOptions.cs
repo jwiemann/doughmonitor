@@ -79,10 +79,9 @@ public sealed class VisionOptions
     /// not this crossing (confirmed daylight reference: about row 475).</summary>
     public double FrontEdgeCoverageFraction { get; init; } = 0.6;
 
-    /// <summary>Persists the established warm-extent jar column (left/right px). On restart
-    /// the detector seeds its window from it, so a camera move that happened while the
-    /// add-on was down is detected by the same scene-change logic as a live bump — and the
-    /// analyzer session can be reset automatically. Null disables persistence.</summary>
+    /// <summary>Persists verified column bounds, the reference image dimensions and the
+    /// scene's physical jar base. Restart thumbnails retain the same measurement units;
+    /// supported geometry changes can still reset the analyzer. Null disables persistence.</summary>
     public string? GeometryStateFilePath { get; init; } = "jar_geometry.json";
 
     public bool DebugSaveAnnotatedImages { get; init; } = true;

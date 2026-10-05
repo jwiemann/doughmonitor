@@ -44,29 +44,36 @@ public sealed class JarLevelDetector(VisionOptions options)
 
     private const int WarmColumnHistorySize = 12;
 
-    /// <summary>Consecutive frames whose fresh warm extent disagreed with the window
-    /// aggregate on both edges — three in a row mean the camera/scene moved and the
-    /// window must re-establish on the new scene instead of blending two scenes for an
-    /// hour.</summary>
-    private int _extentDisagreementStreak;
+    /// <summary>Validated replacement extents awaiting three consistent measurements.</summary>
+    private readonly Queue<(int Left, int Right)> _pendingWarmMove = new();
+
+    private JarColumn? _proposedColumn;
+    private (int Left, int Right)? _freshColumnExtent;
+    private int? _freshWarmFront;
+    private bool _resetWarmFrontOnAccept;
+    private bool _unverifiedExtent;
+    private double? _referenceJarBottomPx;
 
     private int _warmColumnSupport;
 
-    /// <summary>Pixel size of the previous frame. A change (camera reconfiguration) makes
-    /// all stored extents invalid instantly — bounds from a 1280px frame index out of
-    /// range on a 640px one.</summary>
-    private (int Width, int Height)? _lastFrameSize;
+    /// <summary>Whether the latest column attempt confirmed a visible physical base.</summary>
+    private bool _lastColumnBottomConfirmed;
+
+    /// <summary>Persisted image size shared by detection, rendering and growth measurements.
+    /// Only differently sized inputs allocate a resize; normal frames stay untouched.</summary>
+    private (int Width, int Height)? _referenceFrameSize;
 
     /// <summary>Raised when the scene-change detector fires (jar geometry moved). The host
     /// resets the analyzer session here: the rise baseline is a pixel height measured in
     /// the old geometry and is meaningless after a camera move.</summary>
     public event Action? SceneChanged;
 
-    private (int Left, int Right)? _persistedGeometry = LoadGeometry(options.GeometryStateFilePath);
+    private (int Left, int Right, int FrameWidth, int FrameHeight, double? Bottom)? _persistedGeometry =
+        LoadGeometry(options.GeometryStateFilePath);
 
     private bool _geometrySeeded;
 
-    private static (int Left, int Right)? LoadGeometry(string? path)
+    private static (int Left, int Right, int FrameWidth, int FrameHeight, double? Bottom)? LoadGeometry(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
         try
@@ -74,7 +81,12 @@ public sealed class JarLevelDetector(VisionOptions options)
             var filePath = ResolveGeometryPath(path);
             if (!File.Exists(filePath)) return null;
             var node = JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(filePath));
-            return (node.GetProperty("left").GetInt32(), node.GetProperty("right").GetInt32());
+            return (
+                node.GetProperty("left").GetInt32(), node.GetProperty("right").GetInt32(),
+                node.TryGetProperty("frame_width", out var width) ? width.GetInt32() : 0,
+                node.TryGetProperty("frame_height", out var height) ? height.GetInt32() : 0,
+                node.TryGetProperty("jar_bottom_px", out var bottom) && bottom.ValueKind == JsonValueKind.Number
+                    ? bottom.GetDouble() : null);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or KeyNotFoundException)
         {
@@ -90,8 +102,13 @@ public sealed class JarLevelDetector(VisionOptions options)
             var filePath = ResolveGeometryPath(options.GeometryStateFilePath);
             var directory = Path.GetDirectoryName(filePath);
             if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-            File.WriteAllText(filePath, JsonSerializer.Serialize(new { left, right }));
-            _persistedGeometry = (left, right);
+            var frame = _referenceFrameSize.GetValueOrDefault();
+            File.WriteAllText(filePath, JsonSerializer.Serialize(new
+            {
+                left, right, frame_width = frame.Width, frame_height = frame.Height,
+                jar_bottom_px = _referenceJarBottomPx
+            }));
+            _persistedGeometry = (left, right, frame.Width, frame.Height, _referenceJarBottomPx);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -129,44 +146,58 @@ public sealed class JarLevelDetector(VisionOptions options)
             LastDiagnostics = new DetectionDiagnostics("decode_failed", 0, null, null);
             return null;
         }
-        using var rawGray = new Mat();
-        Cv2.CvtColor(rawColor, rawGray, ColorConversionCodes.BGR2GRAY);
-        using var img = ApplyConfiguredRoi(rawGray);
-        using var imgColor = ApplyConfiguredRoi(rawColor);
-        // A matching-aspect resize can seed rescaled geometry, but its pixel-height
-        // growth baseline is still invalid. Fresh body evidence confirms the seed.
-        var frameSize = (img.Width, img.Height);
-        if (_lastFrameSize is { } last && last != frameSize)
+        _proposedColumn = null;
+        _freshColumnExtent = null;
+        _freshWarmFront = null;
+        _resetWarmFrontOnAccept = false;
+        _unverifiedExtent = false;
+        if (_referenceFrameSize is null
+            && _persistedGeometry is { FrameWidth: > 0, FrameHeight: > 0 } saved)
         {
-            var xScale = img.Width / (double)last.Width;
-            var yScale = img.Height / (double)last.Height;
-            if (Math.Abs(xScale - yScale) < 0.001)
+            _referenceFrameSize = (saved.FrameWidth, saved.FrameHeight);
+            _referenceJarBottomPx = saved.Bottom;
+        }
+        var frameSize = (Width: rawColor.Width, Height: rawColor.Height);
+        if (_referenceFrameSize is { } reference && reference != frameSize)
+        {
+            if ((long)reference.Width * frameSize.Height == (long)reference.Height * frameSize.Width)
             {
-                var count = _recentWarmColumns.Count;
-                for (var i = 0; i < count; i++)
-                {
-                    var column = _recentWarmColumns.Dequeue();
-                    _recentWarmColumns.Enqueue(((int)Math.Round(column.Left * xScale),
-                        (int)Math.Round(column.Right * xScale)));
-                }
+                // Sampling resolution is not a new scene. Keep every pixel-based state
+                // and the debug image in the established coordinate system.
+                Cv2.Resize(rawColor, rawColor, new Size(reference.Width, reference.Height),
+                    0, 0, InterpolationFlags.Linear);
+                frameSize = reference;
             }
             else
             {
                 _recentWarmColumns.Clear();
+                _recentWarmFronts.Clear();
+                _pendingWarmMove.Clear();
+                _persistedGeometry = null;
+                _referenceJarBottomPx = null;
+                _warmColumnSupport = 0;
+                _geometrySeeded = true;
+                _referenceFrameSize = frameSize;
+                SceneChanged?.Invoke();
             }
-            _recentWarmFronts.Clear();
-            _extentDisagreementStreak = 0;
-            _persistedGeometry = null;
-            _geometrySeeded = true;
-            _warmColumnSupport = 0;
-            SceneChanged?.Invoke();
         }
-        _lastFrameSize = frameSize;
+        using var rawGray = new Mat();
+        Cv2.CvtColor(rawColor, rawGray, ColorConversionCodes.BGR2GRAY);
+        using var img = ApplyConfiguredRoi(rawGray);
+        using var imgColor = ApplyConfiguredRoi(rawColor);
         // Intensity statistics computed once per frame: Canny thresholds and the
         // dark-frame gate share them.
         var (medianIntensity, p10, p90) = ComputeIntensityStats(img);
         var frameStats = (Mean: (double?)Cv2.Mean(img).Val0, Median: (double?)medianIntensity,
             P10: (double?)p10, P90: (double?)p90);
+        if (_referenceFrameSize is null && _persistedGeometry is { } legacy && legacy.Right >= img.Width)
+        {
+            // Older geometry files have no image size. A smaller startup thumbnail
+            // cannot establish a new pixel basis for their existing feeding session.
+            LastOutcome = "no_jar";
+            LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
+            return null;
+        }
         var detectedGlow = DetectGlowBlob(img);
         // Night frames without backlight are uniformly dark: nothing bright enough to be
         // a lit jar (P90 floor) and no meaningful contrast (P90-P10 floor). The edge-energy
@@ -174,6 +205,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         // so a backlit night frame (dark room, bright jar) still passes.
         if (detectedGlow is null && (p90 < options.MinFrameIntensity || p90 - p10 < options.MinFrameContrast))
         {
+            _pendingWarmMove.Clear();
             LastOutcome = "dark_frame";
             LastDiagnostics = WithFrameStats(new DetectionDiagnostics("dark", 0, null, null), frameStats);
             if (options.DebugSaveAnnotatedImages)
@@ -188,9 +220,15 @@ public sealed class JarLevelDetector(VisionOptions options)
                 : null;
             if (litMeasurement is not null)
             {
+                if (!AcceptGeometryMeasurement(litMeasurement, litColumn!, frameSize))
+                {
+                    LastOutcome = "no_jar";
+                    return null;
+                }
                 LastOutcome = "detected";
                 return litMeasurement;
             }
+            _pendingWarmMove.Clear();
             // Never reinterpret a recognized light source as a warm wall or edge surface.
             LastOutcome = litColumn is null ? "no_jar" : "no_surface";
             LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
@@ -206,6 +244,9 @@ public sealed class JarLevelDetector(VisionOptions options)
             && backlitP90 - backlitMed > 0.5 * backlitMed;
         // The verified light-source/rim path above wins. Otherwise try the warm body
         // before interpreting room brightness or wall edges.
+        // A full-frame fallback needs independently confirmed column/base evidence;
+        // colour alone also selects the wooden stand while the jar is absent.
+        var genuineColumnEvidence = false;
         {
             using var edges = AutoCanny(blurred, medianIntensity, 1.0);
             var warmColumn = FindJarColumnByWarmExtent(
@@ -216,16 +257,23 @@ public sealed class JarLevelDetector(VisionOptions options)
             {
                 var measurement = MeasureWithinColumn(edges, img, imgColor, warmColumn,
                     now, frameStats, sessionBaselineHeightPx, visWarm);
+                // A colour proposal alone does not establish a physical container.
+                genuineColumnEvidence = _lastColumnBottomConfirmed;
                 if (measurement is not null)
                 {
-                    _warmColumnSupport = Math.Min(3, _warmColumnSupport + 1);
+                    if (!AcceptGeometryMeasurement(measurement, warmColumn, frameSize))
+                    {
+                        LastOutcome = "no_jar";
+                        return null;
+                    }
                     LastOutcome = "detected";
                     return measurement;
                 }
+                _pendingWarmMove.Clear();
                 // A cold-start colour patch is only a geometry proposal. Once the
                 // column has three supporting samples, a contour miss cannot authorize
                 // switching to a wall or unrelated fallback column.
-                if (_warmColumnSupport >= 3)
+                if (_warmColumnSupport >= 3 || _proposedColumn is not null)
                 {
                     LastOutcome = "no_surface";
                     LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
@@ -233,8 +281,9 @@ public sealed class JarLevelDetector(VisionOptions options)
                     return null;
                 }
             }
-            if (_extentDisagreementStreak > 0)
+            if (warmColumn is null && _warmColumnSupport >= 3)
             {
+                _pendingWarmMove.Clear();
                 LastOutcome = "no_jar";
                 LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
                 SaveDebugImage(img, null, null, null, null, now, null);
@@ -249,8 +298,10 @@ public sealed class JarLevelDetector(VisionOptions options)
                 using var edges = AutoCanny(blurred, medianIntensity, 1.0);
                 var measurement = MeasureWithinColumn(edges, img, imgColor, darkColumn,
                     now, frameStats, sessionBaselineHeightPx, visWarm, suppressWarmPath: true);
+                genuineColumnEvidence = genuineColumnEvidence || _lastColumnBottomConfirmed;
                 if (measurement is not null)
                 {
+                    AcceptGeometryMeasurement(measurement, darkColumn, frameSize);
                     LastOutcome = "detected";
                     return measurement;
                 }
@@ -265,33 +316,106 @@ public sealed class JarLevelDetector(VisionOptions options)
                 using var edges = AutoCanny(blurred, medianIntensity, relaxation);
                 var column = FindJarColumn(edges, img.Width, img.Height, relaxation);
                 if (column is null) continue;
+                genuineColumnEvidence = true;
                 var measurement = MeasureWithinColumn(edges, img, imgColor, column,
                     now, frameStats, sessionBaselineHeightPx, visWarm);
                 if (measurement is not null)
                 {
+                    AcceptGeometryMeasurement(measurement, column, frameSize);
                     LastOutcome = "detected";
                     return measurement;
                 }
             }
         }
-        // Pass 3: walls invisible (transparent container / box filling the frame)
-        // Use the full frame (minus a border margin) as the column.
-        foreach (var relaxation in new[] { 1.0, 0.6 })
+        // A wall-free column can refine a supported jar, not invent one from the shelf.
+        if (genuineColumnEvidence)
         {
-            using var edges = AutoCanny(blurred, medianIntensity, relaxation);
-            var fallbackColumn = BuildFallbackColumn(img);
-            var measurement = MeasureWithinColumn(edges, img, imgColor, fallbackColumn, now, frameStats, sessionBaselineHeightPx, visWarm, suppressWarmPath: backlitScene);
-            if (measurement is not null)
+            foreach (var relaxation in new[] { 1.0, 0.6 })
             {
-                LastOutcome = "detected";
-                return measurement;
+                using var edges = AutoCanny(blurred, medianIntensity, relaxation);
+                var fallbackColumn = BuildFallbackColumn(img);
+                var measurement = MeasureWithinColumn(edges, img, imgColor, fallbackColumn,
+                    now, frameStats, sessionBaselineHeightPx, visWarm, suppressWarmPath: backlitScene);
+                if (measurement is not null)
+                {
+                    AcceptGeometryMeasurement(measurement, fallbackColumn, frameSize);
+                    LastOutcome = "detected";
+                    return measurement;
+                }
             }
         }
+        _pendingWarmMove.Clear();
         LastOutcome = "no_surface";
         LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
         if (options.DebugSaveAnnotatedImages)
             SaveDebugImage(img, null, null, null, null, now, visWarm);
         return null;
+    }
+
+    private bool AcceptGeometryMeasurement(
+        LevelMeasurement measurement, JarColumn column, (int Width, int Height) frameSize)
+    {
+        var moved = _proposedColumn is not null;
+        if (moved && _referenceJarBottomPx is { } previousBottom
+            && Math.Abs(measurement.JarBottomPx - previousBottom) <= Math.Max(6, frameSize.Height * 0.01))
+        {
+            // Colour width can change with lighting; the supported physical base is
+            // held for the whole scene instead of walking with each noisy estimate.
+            moved = false;
+        }
+        if (moved)
+        {
+            var tolerance = Math.Max(10, (column.Right - column.Left) * 0.1);
+            var candidatesAgree = true;
+            foreach (var pending in _pendingWarmMove)
+            {
+                if (Math.Abs(pending.Left - column.Left) <= tolerance
+                    && Math.Abs(pending.Right - column.Right) <= tolerance) continue;
+                candidatesAgree = false;
+                break;
+            }
+            if (!candidatesAgree) _pendingWarmMove.Clear();
+            _pendingWarmMove.Enqueue((column.Left, column.Right));
+            if (_pendingWarmMove.Count < 3) return false;
+            _recentWarmColumns.Clear();
+            _recentWarmFronts.Clear();
+            _pendingWarmMove.Clear();
+            _recentWarmColumns.Enqueue((column.Left, column.Right));
+            _warmColumnSupport = 0;
+            SceneChanged?.Invoke();
+        }
+        else
+        {
+            _pendingWarmMove.Clear();
+            var width = column.Right - column.Left;
+            if (column.Kind is "warm" or "backlit" && _freshColumnExtent is { } fresh
+                && fresh.Right - fresh.Left >= width * 0.75 && fresh.Right - fresh.Left <= width * 1.25)
+                _recentWarmColumns.Enqueue(fresh);
+            else if (column.Kind is "backlit")
+                _recentWarmColumns.Enqueue((column.Left, column.Right));
+            while (_recentWarmColumns.Count > WarmColumnHistorySize) _recentWarmColumns.Dequeue();
+        }
+        _referenceFrameSize ??= frameSize;
+        if ((moved || _referenceJarBottomPx is null)
+            && (column.Kind is "backlit" || _lastColumnBottomConfirmed))
+            _referenceJarBottomPx = measurement.JarBottomPx;
+        if (LastDiagnostics?.Method is "warm" && _freshWarmFront is { } front)
+        {
+            if (_resetWarmFrontOnAccept) _recentWarmFronts.Clear();
+            _recentWarmFronts.Enqueue(front);
+            while (_recentWarmFronts.Count > 9) _recentWarmFronts.Dequeue();
+        }
+        if (column.Kind is "warm" or "backlit")
+        {
+            _warmColumnSupport = Math.Min(3, _warmColumnSupport + 1);
+            var left = DensestCluster(_recentWarmColumns.Select(c => c.Left), 3);
+            var right = DensestCluster(_recentWarmColumns.Select(c => c.Right), 3);
+            if (_persistedGeometry is not { } saved || saved.Left != left || saved.Right != right
+                || saved.FrameWidth != frameSize.Width || saved.FrameHeight != frameSize.Height
+                || saved.Bottom != _referenceJarBottomPx)
+                PersistGeometry(left, right);
+        }
+        return true;
     }
 
     private LevelMeasurement? MeasureWithinColumn(
@@ -305,6 +429,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         Mat? visWarm,
         bool suppressWarmPath = false)
     {
+        _lastColumnBottomConfirmed = false;
         var inset = Math.Max(3, (jarColumn.Right - jarColumn.Left) / 10);
         var rect = new Rect(
             jarColumn.Left + inset,
@@ -329,7 +454,34 @@ public sealed class JarLevelDetector(VisionOptions options)
             return null;
         }
         var anchorY = jarColumn.Top + doughTop.Value;
-        var jarBottom = FindJarBottom(columnEdges, columnGray, doughTop.Value, rect.Height - 1);
+        var jarBottomCandidate = FindJarBottom(columnEdges, columnGray, doughTop.Value, rect.Height - 1);
+        // A genuinely confirmed physical base edge (not just a defaulted/guessed one) is
+        // real evidence that this column is an actual container, independent of whether
+        // the rest of this specific measurement attempt then succeeds — see Measure's use
+        // for the full-frame fallback column's evidence gate.
+        _lastColumnBottomConfirmed = jarBottomCandidate is not null;
+        if (jarBottomCandidate is null)
+        {
+            if (jarColumn.Kind is "warm")
+            {
+                // An unconfirmed warm-colour extent with no visible physical base edge
+                // (shadow/table-contact line) is a colour PROPOSAL, not a verified
+                // container — e.g. a warm wooden stand with no jar on it.
+                // Defaulting to the proposal's own guessed bottom would report a
+                // plausible-looking height for something that was never a jar.
+                SaveDebugImage(gray, jarColumn, null, null, null, now, visWarm);
+                return null;
+            }
+            jarBottomCandidate = rect.Height - 1;
+        }
+        var jarBottom = jarBottomCandidate.Value;
+        if (_unverifiedExtent && _referenceJarBottomPx is { } heldBottom
+            && Math.Abs(jarColumn.Top + jarBottom - heldBottom) > Math.Max(6, gray.Height * 0.01))
+        {
+            // Background colour/shadow cannot relocate an established physical base.
+            SaveDebugImage(gray, jarColumn, null, null, null, now, visWarm);
+            return null;
+        }
         jarColumn = jarColumn with { Bottom = jarColumn.Top + jarBottom };
         // Color positions the search window; luminance traces the visible boundary.
         // Both ambient and backlit measurements report the traced curve's middle third.
@@ -460,12 +612,13 @@ public sealed class JarLevelDetector(VisionOptions options)
             bottom = rimTop + y;
         }
         if (strongestDrop < 8) return null;
+        _freshColumnExtent = (candidateLeft, candidateRight);
 
         if (!_geometrySeeded)
         {
             _geometrySeeded = true;
             if (_persistedGeometry is { } saved && saved.Left >= 0 && saved.Right < width)
-                _recentWarmColumns.Enqueue(saved);
+                _recentWarmColumns.Enqueue((saved.Left, saved.Right));
         }
         if (_recentWarmColumns.Count > 0)
         {
@@ -476,11 +629,9 @@ public sealed class JarLevelDetector(VisionOptions options)
                 && Math.Abs(candidateRight - heldRight) > moveTolerance;
             if (moved)
             {
-                if (++_extentDisagreementStreak < 3) return null;
-                _recentWarmColumns.Clear();
-                _recentWarmFronts.Clear();
-                _warmColumnSupport = 0;
-                SceneChanged?.Invoke();
+                _proposedColumn = new JarColumn(candidateLeft, candidateRight,
+                    Math.Max(2, height / 30), bottom, "backlit");
+                return _proposedColumn;
             }
             else
             {
@@ -488,12 +639,6 @@ public sealed class JarLevelDetector(VisionOptions options)
                 candidateRight = heldRight;
             }
         }
-        _extentDisagreementStreak = 0;
-        _recentWarmColumns.Enqueue((candidateLeft, candidateRight));
-        while (_recentWarmColumns.Count > WarmColumnHistorySize) _recentWarmColumns.Dequeue();
-        if (_persistedGeometry is not { } persisted
-            || persisted.Left != candidateLeft || persisted.Right != candidateRight)
-            PersistGeometry(candidateLeft, candidateRight);
         return new JarColumn(candidateLeft, candidateRight, Math.Max(2, height / 30), bottom, "backlit");
     }
 
@@ -670,7 +815,8 @@ public sealed class JarLevelDetector(VisionOptions options)
         if (!_geometrySeeded)
         {
             _geometrySeeded = true;
-            if (_persistedGeometry is { } seededColumn) _recentWarmColumns.Enqueue(seededColumn);
+            if (_persistedGeometry is { } seededColumn)
+                _recentWarmColumns.Enqueue((seededColumn.Left, seededColumn.Right));
         }
         ComputeTopQuarterRefs(color, gray, out var satNeutral, out var grayBright);
         satNeutral = Math.Min(satNeutral, neutralReferenceCeiling);
@@ -769,13 +915,14 @@ public sealed class JarLevelDetector(VisionOptions options)
         {
             return null;
         }
-        if (_recentWarmColumns.Count == 0) _recentWarmColumns.Enqueue((left, right));
         // Densest-cluster mode per edge (±3 px): good-light frames agree on the dough edge,
         // washout frames scatter to narrower extents, occasional pollution scatters wider —
         // the mode sits at the true edge and stays put while good frames dominate the
         // window; a lasting regime change migrates the mode smoothly.
-        var columnLeft = DensestCluster(_recentWarmColumns.Select(c => c.Left), 3);
-        var columnRight = DensestCluster(_recentWarmColumns.Select(c => c.Right), 3);
+        var columnLeft = _recentWarmColumns.Count == 0 ? left
+            : DensestCluster(_recentWarmColumns.Select(c => c.Left), 3);
+        var columnRight = _recentWarmColumns.Count == 0 ? right
+            : DensestCluster(_recentWarmColumns.Select(c => c.Right), 3);
         if (columnRight - columnLeft < minJarWidth) return null;
         var marginY = componentBand is { } component
             ? Math.Max(2, component.Y - component.Width / 4)
@@ -783,49 +930,34 @@ public sealed class JarLevelDetector(VisionOptions options)
         var columnBottom = componentBand is { } bounded
             ? Math.Min(frameHeight - 2, bounded.Bottom + Math.Max(8, bounded.Width / 12))
             : frameHeight - marginY;
-        // Scene-change detector: both edges far off the aggregate means the camera moved.
-        // After three consecutive such frames, restart the window on the new scene —
-        // otherwise old-scene bounds would pollute measurements for a full window length.
+        _freshColumnExtent = (left, right);
         var moveTolerance = Math.Max(12, (columnRight - columnLeft) * 0.18);
-        if (Math.Abs(left - columnLeft) > moveTolerance
-            && Math.Abs(right - columnRight) > moveTolerance)
-        {
-            _extentDisagreementStreak++;
-            if (_extentDisagreementStreak >= 3)
-            {
-                _recentWarmColumns.Clear();
-                _recentWarmFronts.Clear();
-                _recentWarmColumns.Enqueue((left, right));
-                _extentDisagreementStreak = 0;
-                PersistGeometry(left, right);
-                // The rise baseline is a pixel height in the OLD geometry; hosts must
-                // reset the analyzer session when this fires.
-                _warmColumnSupport = 0;
-                SceneChanged?.Invoke();
-                return new JarColumn(left, right, marginY, columnBottom, "warm");
-            }
-            // Do not publish measurements in the old coordinate system while a move
-            // is being confirmed. Keep the old cluster intact for all three votes.
-            return null;
-        }
-        else
-        {
-            _extentDisagreementStreak = 0;
-        }
         var heldWidth = columnRight - columnLeft;
         var freshWidth = right - left;
-        // One-sided washout/pollution is a lighting change, not a new container.
-        if (freshWidth >= heldWidth * 0.75 && freshWidth <= heldWidth * 1.25)
+        var moved = Math.Abs(left - columnLeft) > moveTolerance
+            && Math.Abs(right - columnRight) > moveTolerance;
+        var resized = freshWidth < heldWidth * 0.75 || freshWidth > heldWidth * 1.25;
+        if (_recentWarmColumns.Count > 0 && (moved || resized))
         {
-            _recentWarmColumns.Enqueue((left, right));
-            while (_recentWarmColumns.Count > WarmColumnHistorySize) _recentWarmColumns.Dequeue();
-            columnLeft = DensestCluster(_recentWarmColumns.Select(c => c.Left), 3);
-            columnRight = DensestCluster(_recentWarmColumns.Select(c => c.Right), 3);
-        }
-        if (_persistedGeometry is not { } persisted
-            || persisted.Left != columnLeft || persisted.Right != columnRight)
-        {
-            PersistGeometry(columnLeft, columnRight);
+            var body = componentBand ?? FindWarmBodyComponent(warmMask);
+            if (body is not { } supported || supported.Width < freshWidth * 0.65
+                || supported.Bottom >= frameHeight - 2
+                || supported.Bottom <= bandTop || supported.Y > bandBottom)
+            {
+                _unverifiedExtent = true;
+                return new JarColumn(columnLeft, columnRight, marginY, columnBottom, "warm");
+            }
+            left = Math.Max(left, supported.X);
+            right = Math.Min(right, supported.Right - 1);
+            _freshColumnExtent = (left, right);
+            freshWidth = right - left;
+            moved = Math.Abs(left - columnLeft) > moveTolerance
+                && Math.Abs(right - columnRight) > moveTolerance;
+            resized = freshWidth < heldWidth * 0.75 || freshWidth > heldWidth * 1.25;
+            if (!moved && !resized)
+                return new JarColumn(columnLeft, columnRight, marginY, columnBottom, "warm");
+            _proposedColumn = new JarColumn(left, right, marginY, columnBottom, "warm");
+            return _proposedColumn;
         }
         return new JarColumn(columnLeft, columnRight, marginY, columnBottom, "warm");
     }
@@ -1476,22 +1608,29 @@ public sealed class JarLevelDetector(VisionOptions options)
         // one median would blur two different boundaries.
         if (result is { } rawRow && diagnostics?.Method == "warm")
         {
-            var recent = _recentWarmFronts.OrderBy(x => x).ToList();
-            var median = recent.Count > 0 ? recent[recent.Count / 2] : rawRow;
-            if (recent.Count >= 3 && rawRow - median > 50)
+            _freshWarmFront = rawRow;
+            Span<int> previous = stackalloc int[9];
+            var previousCount = 0;
+            foreach (var row in _recentWarmFronts) previous[previousCount++] = row;
+            previous[..previousCount].Sort();
+            if (previousCount >= 3 && rawRow - previous[previousCount / 2] > 50)
             {
-                // Far below the median: the level collapsed (re-feed). Flush and take the
-                // raw reading so the new session starts immediately.
-                _recentWarmFronts.Clear();
-                _recentWarmFronts.Enqueue(rawRow);
+                _resetWarmFrontOnAccept = true;
+                return result;
             }
-            else
+            if (_proposedColumn is not null) return result;
+
+            Span<int> next = stackalloc int[9];
+            var skip = _recentWarmFronts.Count == 9;
+            var count = 0;
+            foreach (var row in _recentWarmFronts)
             {
-                _recentWarmFronts.Enqueue(rawRow);
-                while (_recentWarmFronts.Count > 9) _recentWarmFronts.Dequeue();
-                var sorted = _recentWarmFronts.OrderBy(x => x).ToList();
-                result = sorted[sorted.Count / 2];
+                if (skip) { skip = false; continue; }
+                next[count++] = row;
             }
+            next[count++] = rawRow;
+            next[..count].Sort();
+            result = next[count / 2];
         }
         return result;
     }
@@ -1564,16 +1703,18 @@ public sealed class JarLevelDetector(VisionOptions options)
             FrameP90 = frameStats.P90
         };
 
-    /// <summary>Resolves the jar bottom in column coordinates. The wall-derived column lower
-    /// bound is the default; a visible horizontal edge only refines it within a band just
-    /// above that bound. Picking any strong edge below the dough (e.g. the dough surface
-    /// edge itself) collapses the height and poisons the rise series.</summary>
-    private static int FindJarBottom(Mat columnEdges, Mat columnGray, int doughTop, int fallbackBottom)
+    /// <summary>Resolves the jar bottom in column coordinates from a visible physical edge
+    /// (profile contrast step or horizontal Hough edge) within a band just above the
+    /// column's own lower bound. Returns null when neither confirms an edge — the caller
+    /// decides whether a last-resort default is acceptable for the column's kind. Picking
+    /// any strong edge below the dough (e.g. the dough surface edge itself) collapses the
+    /// height and poisons the rise series.</summary>
+    private static int? FindJarBottom(Mat columnEdges, Mat columnGray, int doughTop, int fallbackBottom)
     {
         var bandStart = Math.Max(doughTop + 2, fallbackBottom - Math.Max(4, fallbackBottom / 4));
         var profileBottom = FindJarBottomFromProfile(columnGray, bandStart, fallbackBottom);
         if (profileBottom is not null) return profileBottom.Value;
-        return FindJarBottomFromHorizontalEdge(columnEdges, bandStart, fallbackBottom) ?? fallbackBottom;
+        return FindJarBottomFromHorizontalEdge(columnEdges, bandStart, fallbackBottom);
     }
 
     // The ambient-lit glass foot is a dark shadow followed by the lighter shelf.

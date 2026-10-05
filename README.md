@@ -97,6 +97,19 @@ The default interprets filename clocks in the replay host's local timezone. Use
 cadence varies; `--stride` samples file indices instead. Replay disables persistent
 geometry/session state and leaves the translucent dough overlay off.
 
+## Session resets and lighting
+
+A confirmed feeding-related height drop starts a new baseline. Missing snapshots,
+an absent jar, darkness and ambiguous dawn/glare frames leave the feeding session
+intact; a wooden stand is not accepted as dough merely because it is warm-coloured.
+
+Uniform snapshot resizes are processed in the established image coordinate system,
+shared by measurements and debug overlays. Reference dimensions and the supported
+jar base are persisted with geometry, so a startup thumbnail does not redefine an
+existing session. Actual aspect changes invalidate the coordinate system; other
+geometry changes require consistent, valid jar/base/surface evidence before reset.
+
+
 ## Expensive local calibration loop
 
 The implementation plan and acceptance gates are in [DETECTION_PLAN.md](DETECTION_PLAN.md).
@@ -136,8 +149,9 @@ Outputs:
 
 For a live-cadence run, omit `--every-frame` and select `--interval-minutes 10` (default).
 Each replay uses a new output directory; old evidence is retained. Raw images and
-generated artifacts are ignored by Git. Six small real-photo regression fixtures
-cover backlight/wall, competing rims, pale-dough, smaller-jar, base-edge, and empty scenes.
+generated artifacts are ignored by Git. Curated real-photo regressions cover backlight,
+glare, pale dough, smaller jars, base edges, empty shelves/wooden stands, dawn recovery,
+sampling-resolution changes and persisted-session recovery.
 
 The current corpus validates one physical jar across several camera positions,
 ambient/backlit day/night, and geometric stress transforms. It does not certify
@@ -151,7 +165,10 @@ A flat lag phase or accelerating segment alone does not identify a maximum. Pred
 remain unavailable until meaningful rise and sustained slowdown are observed. The
 sigmoid may reach its practical maximum in the past; forcing a future ETA would invent
 continued growth after the plateau. Once the practical peak is confirmed, the peaked
-sensor is set and the ETA is withdrawn. Camera-coordinate changes reset the baseline.
+sensor is set and the ETA is withdrawn. Sustained renewed growth beyond the remembered
+peak plus measurement jitter clears the flag without discarding the feeding history.
+A recovered session must show a new observed plateau before confirming another peak;
+a fit to the earlier plateau alone is insufficient.
 
 Controlled growth-curve verification is not a backtest of actual fermentation timing.
 That requires a camera-stable recorded rise and an independently observed peak.

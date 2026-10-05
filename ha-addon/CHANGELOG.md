@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.47
+
+- Preserve feeding history through darkness, dawn reacquisition and snapshot resizing;
+  persist the measurement coordinate basis and require verified geometry before reset.
+- Reject the empty wooden stand instead of reporting it as dough.
+- Clear a stale peaked flag after confirmed renewed growth, retain the session, and
+  require a new observed plateau before declaring another peak.
+
 ## 0.1.46
 
 - Detect the backlit jar/base and actual dough front instead of LED fades or wall

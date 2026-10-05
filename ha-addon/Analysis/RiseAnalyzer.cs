@@ -31,6 +31,7 @@ public sealed class RiseAnalyzer
     private int _implausibleStreak;
     private int _collapseStreak;
     private double _maximumSlope;
+    private double? _peakReferenceRisePercent;
 
     public RiseAnalyzer(AnalysisOptions options)
     {
@@ -212,19 +213,45 @@ public sealed class RiseAnalyzer
     private void UpdatePeakState(SigmoidFit? fit)
     {
         var count = Math.Max(1, _options.PeakConfirmWindows);
-        if (_peaked || _slopes.Count < count) return;
+        if (_slopes.Count < count) return;
+        if (_peaked)
+        {
+            UpdateUnpeakState(count);
+            return;
+        }
         var maxRise = _samples.Max(s => s.RisePercent);
         if (maxRise < _options.MinRisePercentForPeak) return;
         var flatOrFalling = true;
         for (var i = _slopes.Count - count; i < _slopes.Count; i++)
             if (_slopes[i].Slope > _options.FlatSlopePercentPerHour) flatOrFalling = false;
-        var practicalPeak = fit is not null && _samples.Count >= count;
-        if (fit is not null)
+        // After resumed growth, a refit can still follow the old plateau. Require an
+        // observed new flat/falling period before confirming another peak.
+        var practicalPeak = _peakReferenceRisePercent is null && fit is not null && _samples.Count >= count;
+        if (practicalPeak && fit is not null)
         {
             for (var i = _samples.Count - count; i < _samples.Count; i++)
                 if (_samples[i].RisePercent < fit.L * _options.PeakFraction) practicalPeak = false;
         }
-        _peaked = flatOrFalling || practicalPeak;
+        if (!(flatOrFalling || practicalPeak)) return;
+        _peaked = true;
+        // A fitted peak uses the asymptote; a flat peak uses the observed maximum.
+        // Normal asymptotic creep must not revoke a confirmed practical peak.
+        _peakReferenceRisePercent = fit?.L ?? maxRise;
+    }
+
+    /// <summary>Revokes a peak only after confirmed positive slopes and current growth
+    /// beyond the remembered peak plus measurement jitter; session history is retained.</summary>
+    private void UpdateUnpeakState(int count)
+    {
+        for (var i = _slopes.Count - count; i < _slopes.Count; i++)
+            if (_slopes[i].Slope <= _options.FlatSlopePercentPerHour) return;
+        if (_peakReferenceRisePercent is not { } reference
+            || _baselineDoughHeightPx is not { } baseline || baseline <= 0) return;
+        var jitterMarginPercent = _options.JitterTolerancePx / baseline * 100.0;
+        if (_samples[^1].RisePercent <= reference + jitterMarginPercent) return;
+        _peaked = false;
+        // Refit the retained session without the invalid plateau's optimizer seed.
+        _lastFit = null;
     }
 
     private void ResetSession(DateTimeOffset start, double? baselinePx)
@@ -236,6 +263,7 @@ public sealed class RiseAnalyzer
         _sessionStart = start;
         _peaked = false;
         _lastFit = null;
+        _peakReferenceRisePercent = null;
         _collapseStreak = 0;
         _maximumSlope = 0;
     }
@@ -248,7 +276,8 @@ public sealed class RiseAnalyzer
             _slopes.ToList(),
             _baselineDoughHeightPx,
             _sessionStart,
-            _peaked);
+            _peaked,
+            _peakReferenceRisePercent);
         var path = ResolvePath(_options.StateFilePath);
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
@@ -273,6 +302,7 @@ public sealed class RiseAnalyzer
             _baselineDoughHeightPx = state.BaselineDoughHeightPx;
             _sessionStart = state.SessionStart;
             _peaked = state.Peaked;
+            _peakReferenceRisePercent = state.PeakReferenceRisePercent;
             if (_samples.Count > 0 && SessionExpired(DateTimeOffset.UtcNow))
             {
                 ResetSession(DateTimeOffset.UtcNow, null);
@@ -284,6 +314,10 @@ public sealed class RiseAnalyzer
                 var last = _samples[^1];
                 _lastAcceptedHeightPx = _baselineDoughHeightPx.Value * (1 + last.RisePercent / 100.0);
                 _lastMeasurementTime = last.Time;
+                // Older persisted peaks have no anchor. Require growth beyond their
+                // observed maximum rather than guessing an earlier plateau.
+                if (_peaked && _peakReferenceRisePercent is null)
+                    _peakReferenceRisePercent = _samples.Max(s => s.RisePercent);
             }
         }
         catch (Exception)
@@ -300,5 +334,6 @@ public sealed class RiseAnalyzer
         List<SlopeSample> Slopes,
         double? BaselineDoughHeightPx,
         DateTimeOffset SessionStart,
-        bool Peaked);
+        bool Peaked,
+        double? PeakReferenceRisePercent = null);
 }
