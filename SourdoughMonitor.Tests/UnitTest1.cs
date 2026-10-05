@@ -256,7 +256,6 @@ public class RiseAnalyzerTests
         {
             var options = new AnalysisOptions
             {
-                SlopeWindowMinutes = 40,
                 ResetDropFraction = 0.25,
                 MinSamplesForFit = 3,
                 MaxEtaRelativeStdError = 0.15,
@@ -270,18 +269,21 @@ public class RiseAnalyzerTests
             var start = DateTimeOffset.UtcNow;
             analyzer.Analyze(new LevelMeasurement(start, 100, 0, 200));
             RiseReading? last = null;
-            // Enough samples for a rolling-window slope (>= 4) to be computed and persisted.
-            for (var i = 1; i <= 5; i++)
+            // A rate needs a span long enough to be known within the standard-error limit;
+            // the first samples also still carry the median window's warm-up lag.
+            for (var i = 1; i <= 20; i++)
                 last = analyzer.Analyze(
                     new LevelMeasurement(start.AddMinutes(5 * i), 100 - 5 * i, 0, 200));
             Assert.NotNull(last);
             Assert.NotNull(last!.RiseRatePercentPerHour);
-            Assert.True(File.Exists(stateFile));
-            // A fresh instance reading the persisted file must not throw and must recover the session.
+            // A restart must retain the same feeding session and calculated trend.
             var restored = new RiseAnalyzer(options);
-            var next = restored.Analyze(new LevelMeasurement(start.AddMinutes(35), 70, 0, 200));
+            var next = restored.Analyze(new LevelMeasurement(start.AddMinutes(105), 100 - 105, 0, 200));
             Assert.NotNull(next);
             Assert.False(next!.NewSession);
+            Assert.Equal(start, next.SessionStart);
+            Assert.Equal(100, restored.BaselineDoughHeightPx);
+            Assert.NotNull(next.RiseRatePercentPerHour);
         }
         finally
         {
@@ -293,26 +295,84 @@ public class RiseAnalyzerTests
     [Fact]
     public void Analyze_ResetsSessionWhenDoughDropsBelowBaselineAfterRefeed()
     {
-        // Re-feed: the dough level drops far below the session baseline while the clamped
-        // rise percent hides it at 0% — the session must reset on the absolute height drop.
         var analyzer = NewAnalyzer();
-        var t0 = new DateTimeOffset(2026, 10, 1, 7, 15, 0, TimeSpan.Zero);
-        for (var i = 0; i < 3; i++)
-        {
-            analyzer.Analyze(new LevelMeasurement(t0.AddMinutes(5 * i), 100, 0, 200));
-        }
+        var start = new DateTimeOffset(2026, 10, 1, 7, 15, 0, TimeSpan.Zero);
+        analyzer.Analyze(new LevelMeasurement(start, 100, 0, 200));
+        RiseReading? reset = null;
         // Dough top drops to 140 (height 60 vs baseline 100) and stays there.
-        RiseReading? last = null;
-        for (var i = 0; i < 8; i++)
+        for (var i = 1; i <= 8 && reset is null; i++)
         {
-            last = analyzer.Analyze(new LevelMeasurement(t0.AddMinutes(15 + 5 * i), 140, 0, 200));
+            var reading = analyzer.Analyze(new LevelMeasurement(start.AddMinutes(5 * i), 140, 0, 200));
+            if (reading?.NewSession == true) reset = reading;
         }
-        Assert.NotNull(last);
-        Assert.True(last!.NewSession, "re-feed must reset the session");
+        Assert.NotNull(reset);
+        Assert.Null(reset!.RiseRatePercentPerHour);
+        Assert.Equal(60, analyzer.BaselineDoughHeightPx);
         // The next frame measures against the new baseline (height 60).
-        var next = analyzer.Analyze(new LevelMeasurement(t0.AddMinutes(60), 135, 0, 200));
-        Assert.False(next.NewSession);
+        var next = analyzer.Analyze(new LevelMeasurement(start.AddMinutes(20), 135, 0, 200));
+        Assert.NotNull(next);
+        Assert.False(next!.NewSession);
         Assert.Equal(8.3, next.RisePercent, precision: 1);
+    }
+
+    [Fact]
+    public void Analyze_PublishesRiseRateOnlyOnceItsStandardErrorIsSmall()
+    {
+        var start = new DateTimeOffset(2026, 10, 3, 10, 0, 0, TimeSpan.Zero);
+
+        // A few minutes of post-reset jitter used to be extrapolated to an hourly slope
+        // and published as an absurd -100 %/h. Its standard error is far too large.
+        var jittery = NewAnalyzer();
+        jittery.Analyze(AtHeight(start, 100));
+        for (var minute = 1; minute <= 8; minute++)
+        {
+            var reading = jittery.Analyze(AtHeight(start.AddMinutes(minute), 112 - 2 * minute));
+            Assert.Null(reading?.RiseRatePercentPerHour);
+        }
+
+        // A clean gradual decline is published as soon as the span pins the slope to
+        // within the limit (about 35 minutes of 1-minute samples on a 100 px baseline).
+        var declining = NewAnalyzer();
+        declining.Analyze(AtHeight(start, 100));
+        int? firstMinute = null;
+        RiseReading? latest = null;
+        for (var minute = 5; minute <= 60; minute++)
+        {
+            latest = declining.Analyze(AtHeight(start.AddMinutes(minute), 120 - 0.1 * minute));
+            if (latest?.RiseRatePercentPerHour is not null) firstMinute ??= minute;
+        }
+        Assert.InRange(firstMinute!.Value, 30, 45);
+        Assert.InRange(latest!.RiseRatePercentPerHour!.Value, -7, -5);
+
+        // The trend is fitted on the true rise, not on its display clamp at 0 %, so the
+        // rate stays correct while the dough sits below its session baseline.
+        var belowBaseline = NewAnalyzer();
+        belowBaseline.Analyze(AtHeight(start, 100));
+        RiseReading? below = null;
+        for (var minute = 1; minute <= 60; minute++)
+            below = belowBaseline.Analyze(AtHeight(start.AddMinutes(minute), 104 - 0.1 * minute));
+        Assert.Equal(0, below!.RisePercent);
+        Assert.InRange(below.RiseRatePercentPerHour!.Value, -7, -5);
+    }
+
+    [Fact]
+    public void Analyze_ConfirmsFeedingDropOnRawHeightsInsteadOfTheBlendedMedian()
+    {
+        // The 5-sample median still shows the old plateau for the first drop frames, so a
+        // reset confirmed on it blends the discontinuity into the new session's slope.
+        var analyzer = NewAnalyzer();
+        var start = new DateTimeOffset(2026, 10, 3, 10, 0, 0, TimeSpan.Zero);
+        analyzer.Analyze(AtHeight(start, 100));
+        for (var minute = 5; minute <= 60; minute += 5)
+            analyzer.Analyze(AtHeight(start.AddMinutes(minute), 100 + minute * 0.8));
+        for (var minute = 65; minute <= 100; minute += 5)
+            analyzer.Analyze(AtHeight(start.AddMinutes(minute), 148));
+        Assert.Null(analyzer.Analyze(AtHeight(start.AddMinutes(105), 91)));
+        Assert.Null(analyzer.Analyze(AtHeight(start.AddMinutes(110), 93)));
+        var reset = analyzer.Analyze(AtHeight(start.AddMinutes(115), 92));
+        Assert.True(reset!.NewSession);
+        Assert.Null(reset.RiseRatePercentPerHour);
+        Assert.Equal(92, analyzer.BaselineDoughHeightPx);
     }
 
     [Fact]
@@ -341,4 +401,7 @@ public class RiseAnalyzerTests
         MaxSessionHours = 36,
         StateFilePath = null
     });
+
+    private static LevelMeasurement AtHeight(DateTimeOffset time, double heightPx) =>
+        new(time, 1000 - heightPx, 0, 1000);
 }

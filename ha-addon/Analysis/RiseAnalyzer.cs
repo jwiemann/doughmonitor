@@ -1,6 +1,4 @@
 using System.Text.Json;
-
-using MathNet.Numerics;
 using MathNet.Numerics.Statistics;
 
 using SourdoughMonitor.Config;
@@ -12,6 +10,9 @@ using Models;
 /// <summary>Stateful per-session analysis: baseline tracking, auto-reset, rolling slope, sigmoid-based ETA.</summary>
 public sealed class RiseAnalyzer
 {
+    /// <summary>Fewest samples a rate may be fitted from, whatever their error estimate.</summary>
+    private const int MinRateSamples = 4;
+
     private readonly AnalysisOptions _options;
     private readonly List<Sample> _samples = [];
     private readonly List<SlopeSample> _slopes = [];
@@ -29,7 +30,7 @@ public sealed class RiseAnalyzer
     private double? _lastAcceptedHeightPx;
     private DateTimeOffset? _lastMeasurementTime;
     private int _implausibleStreak;
-    private int _collapseStreak;
+    private List<double>? _pendingCollapseHeights;
     private double _maximumSlope;
     private double? _peakReferenceRisePercent;
 
@@ -53,59 +54,36 @@ public sealed class RiseAnalyzer
 
     public RiseReading? Analyze(LevelMeasurement m)
     {
-        var hasActiveSession = _baselineDoughHeightPx is not null && !SessionExpired(m.Time);
-        // Physical plausibility gate: reject a raw reading that implies the dough moved
-        // faster than organic fermentation can (camera glitch, misdetected frame - e.g.
-        // locking onto glare or the jar's own base) before it ever reaches the smoothing
-        // window, rather than letting a single bad frame drag the median toward it.
-        // But real dough handling - feeding the starter, punching down before shaping, a
-        // fold that briefly puffs the dough up before it settles into a bigger container -
-        // also moves the surface faster than this budget allows, and unlike a one-off
-        // misdetected frame, it persists across samples instead of reverting on the next
-        // one. Cap how many consecutive frames the gate can reject so a real handling event
-        // is only briefly "unavailable" instead of locked out until enough elapsed time
-        // inflates the budget past it; downstream, the existing collapse-reset logic
-        // recognizes a genuine sustained drop and starts a fresh baseline for it.
-        if (hasActiveSession && IsImplausibleJump(m.DoughHeightPx, m.Time))
+        if (_lastMeasurementTime is { } lastTime && m.Time <= lastTime) return null;
+        if (_baselineDoughHeightPx is not { } baseline || SessionExpired(m.Time))
+            return StartMeasuredSession(m.Time, m.DoughHeightPx);
+
+        // Confirm feeding/handling on raw heights before the median can blend the
+        // discontinuity into otherwise valid fermentation samples and their rate.
+        var rawRisePercent = (m.DoughHeightPx - baseline) / baseline * 100.0;
+        if (IsCollapseReset(rawRisePercent, m.DoughHeightPx))
+        {
+            var pending = _pendingCollapseHeights ??= [];
+            pending.Add(m.DoughHeightPx);
+            if (pending.Count < _options.CollapseConfirmSamples) return null;
+            return StartMeasuredSession(m.Time, pending.Median());
+        }
+        _pendingCollapseHeights?.Clear();
+        if (IsImplausibleJump(m.DoughHeightPx, m.Time))
         {
             _implausibleStreak++;
             if (_implausibleStreak <= _options.MaxImplausibleJumpRejects) return null;
-            // Streak exhausted: a misdetected frame doesn't repeat identically this many
-            // times in a row, so trust it as a real (if abrupt) change and stop rejecting.
+            // A misdetected frame does not repeat this many times: trust the persistent
+            // level, e.g. overnight growth first seen at dawn. Genuine feeding drops were
+            // already confirmed above, and the slope never bridges a gap beyond its window.
         }
         _implausibleStreak = 0;
-
-        // Smooth the raw per-frame pixel height first: a single noisy/condensation-affected
-        // frame would otherwise propagate straight into the baseline and every downstream
-        // percentage, slope and fit computed from it.
         var smoothedHeightPx = Smooth(m.DoughHeightPx);
         _lastAcceptedHeightPx = smoothedHeightPx;
         _lastMeasurementTime = m.Time;
-        if (!hasActiveSession)
-        {
-            ResetSession(m.Time, smoothedHeightPx);
-            SaveState();
-            return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true, SessionStart: _sessionStart);
-        }
-        var risePercent = (smoothedHeightPx - _baselineDoughHeightPx.Value) / _baselineDoughHeightPx.Value * 100.0;
-        if (IsCollapseReset(risePercent, smoothedHeightPx))
-        {
-            // A single frame that looks like a collapse is exactly what a jar reappearing
-            // after a detection gap (occlusion, glare while reacquiring) tends to produce:
-            // the vision pipeline hasn't locked back onto the true surface yet. A genuine
-            // collapse (punch-down, deflating starter) keeps reporting the lower level on
-            // the next samples instead of reverting, so require it to persist for a few
-            // consecutive samples before wiping the session; treat the unconfirmed ones as
-            // unavailable rather than resetting on the first sighting.
-            _collapseStreak++;
-            if (_collapseStreak < _options.CollapseConfirmSamples) return null;
-            ResetSession(m.Time, smoothedHeightPx);
-            SaveState();
-            return new RiseReading(m.Time, 0, null, null, null, false, NewSession: true, SessionStart: _sessionStart);
-        }
-        _collapseStreak = 0;
+        var risePercent = (smoothedHeightPx - baseline) / baseline * 100.0;
         _samples.Add(new Sample(m.Time, risePercent));
-        var slope = ComputeWindowSlope(m.Time);
+        var slope = ComputeRate(m.Time);
         if (slope is { } rate)
         {
             _slopes.Add(new SlopeSample(m.Time, rate));
@@ -126,7 +104,7 @@ public sealed class RiseAnalyzer
         return new RiseReading(
             m.Time,
             Math.Round(ClampRisePercent(risePercent), 1),
-            slope is null ? null : Math.Round(ClampRiseRate(slope.Value), 1),
+            slope is null ? null : Math.Round(slope.Value, 1),
             fit is null ? null : Math.Round(ClampPredictedPeak(fit.L * _options.PeakFraction), 0),
             fit is null ? null : _sessionStart.AddHours(fit.HoursAtFraction(_options.PeakFraction)),
             _peaked,
@@ -171,43 +149,64 @@ public sealed class RiseAnalyzer
     private static double ClampRisePercent(double value) =>
         Math.Clamp(value, 0, 500);
 
-    private static double ClampRiseRate(double value) =>
-        Math.Clamp(value, -100, 500);
-
     private static double ClampPredictedPeak(double value) =>
         Math.Clamp(value, 0, 500);
 
     private bool SessionExpired(DateTimeOffset now) =>
         _samples.Count > 0 && (now - _sessionStart).TotalHours > _options.MaxSessionHours;
 
-    private bool IsCollapseReset(double risePercent, double smoothedHeightPx)
+    private bool IsCollapseReset(double risePercent, double doughHeightPx)
     {
-        if (_samples.Count < 5) return false;
         // Absolute height drop below the session-start level: a re-feed empties the jar
         // below the baseline while the clamped rise percent hides it at 0% — and during a
         // lag phase the rise-median guard below never passes. Compare heights directly.
         if (_baselineDoughHeightPx is { } baseline
-            && smoothedHeightPx < baseline * (1 - _options.ResetDropFraction))
+            && doughHeightPx < baseline * (1 - _options.ResetDropFraction))
         {
             return true;
         }
+        if (_samples.Count < 5) return false;
         var recentMedian = _samples.TakeLast(5)
             .Select(s => s.RisePercent)
             .Median();
         return recentMedian > 20 && risePercent < recentMedian * (1 - _options.ResetDropFraction);
     }
 
-    private double? ComputeWindowSlope(DateTimeOffset now)
+    /// <summary>Rise rate (%/h): the least-squares slope of the shortest trailing span whose
+    /// standard error is within <see cref="AnalysisOptions.MaxRateStdErrPercentPerHour"/>, or
+    /// null while no span within the look-back determines it. The error combines the sampling
+    /// geometry (a longer or denser span pins the slope better) with the noise of a
+    /// reading, taken as the larger of the configured floor and the scatter around the
+    /// fit. A step or a handful of jittery frames therefore inflates the error and is
+    /// withheld, rather than being clipped to a plausible-looking value.</summary>
+    private double? ComputeRate(DateTimeOffset now)
     {
-        var window = _samples.Where(s => (now - s.Time).TotalMinutes <= _options.SlopeWindowMinutes)
-            .ToArray();
-        if (window.Length < 4) return null;
-        var x = window.Select(s => (s.Time - window[0].Time).TotalHours)
-            .ToArray();
-        var y = window.Select(s => s.RisePercent)
-            .ToArray();
-        return Fit.Line(x, y)
-            .B;
+        if (_baselineDoughHeightPx is not { } baseline || baseline <= 0) return null;
+        var floorVariance = Math.Pow(_options.RateNoiseFloorPx / baseline * 100.0, 2);
+        var cutoff = now.AddMinutes(-_options.SlopeWindowMinutes);
+        // Running sums over the trailing samples, newest first, in hours relative to now.
+        double n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0, syy = 0;
+        for (var i = _samples.Count - 1; i >= 0 && _samples[i].Time >= cutoff; i--)
+        {
+            var x = (_samples[i].Time - now).TotalHours;
+            var y = _samples[i].RisePercent;
+            n++;
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            sxy += x * y;
+            syy += y * y;
+            if (n < MinRateSamples) continue;
+            var spreadX = sxx - sx * sx / n;
+            if (spreadX <= 0) continue;
+            var covariance = sxy - sx * sy / n;
+            var slope = covariance / spreadX;
+            var residualSumSquares = Math.Max(0, syy - sy * sy / n - slope * covariance);
+            var noiseVariance = Math.Max(floorVariance, residualSumSquares / (n - 2));
+            if (Math.Sqrt(noiseVariance / spreadX) <= _options.MaxRateStdErrPercentPerHour)
+                return slope;
+        }
+        return null;
     }
 
     private void UpdatePeakState(SigmoidFit? fit)
@@ -264,8 +263,20 @@ public sealed class RiseAnalyzer
         _peaked = false;
         _lastFit = null;
         _peakReferenceRisePercent = null;
-        _collapseStreak = 0;
+        _pendingCollapseHeights?.Clear();
         _maximumSlope = 0;
+        _lastAcceptedHeightPx = null;
+        _lastMeasurementTime = null;
+        _implausibleStreak = 0;
+    }
+
+    private RiseReading StartMeasuredSession(DateTimeOffset time, double heightPx)
+    {
+        ResetSession(time, heightPx);
+        _lastAcceptedHeightPx = heightPx;
+        _lastMeasurementTime = time;
+        SaveState();
+        return new RiseReading(time, 0, null, null, null, false, NewSession: true, SessionStart: time);
     }
 
     private void SaveState()

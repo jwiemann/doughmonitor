@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.48
+
+- Publish the starter rise rate only once it is statistically determined: the slope of the
+  shortest recent span whose standard error is at most 2 %/h (new options
+  `RateNoiseFloorPx`, `MaxRateStdErrPercentPerHour`; `SlopeWindowMinutes` is now the
+  maximum look-back, default 120). Jitter after a reset or a step no longer yields
+  values such as -100 %/h, and the trend is fitted on the unclamped rise.
+- Confirm feeding drops on raw heights, so the pre-reset transition no longer feeds
+  stale rises or steep rates into the trend; the new session starts at the confirmed level.
+- A persistent rise after a gap (overnight growth first seen at dawn) stays in the session.
+
 ## 0.1.47
 
 - Preserve feeding history through darkness, dawn reacquisition and snapshot resizing;

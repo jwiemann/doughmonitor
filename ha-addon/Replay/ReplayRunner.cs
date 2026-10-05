@@ -442,6 +442,8 @@ public static class ReplayRunner
     private static AnalysisOptions BuildReplayAnalysisOptions(AnalysisOptions src) => new()
     {
         SlopeWindowMinutes = src.SlopeWindowMinutes,
+        RateNoiseFloorPx = src.RateNoiseFloorPx,
+        MaxRateStdErrPercentPerHour = src.MaxRateStdErrPercentPerHour,
         ResetDropFraction = src.ResetDropFraction,
         MinSamplesForFit = src.MinSamplesForFit,
         MaxEtaRelativeStdError = src.MaxEtaRelativeStdError,

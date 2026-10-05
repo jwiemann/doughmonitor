@@ -2,7 +2,23 @@ namespace SourdoughMonitor.Config;
 
 public sealed class AnalysisOptions
 {
-    public int SlopeWindowMinutes { get; init; } = 40;
+    /// <summary>Longest look-back (minutes) the rise rate may use. The rate is the slope of
+    /// the shortest trailing span that already determines it well enough (see
+    /// <see cref="MaxRateStdErrPercentPerHour"/>); a longer span lowers noise but biases the
+    /// slope while growth accelerates or slows, so it is bounded.</summary>
+    public int SlopeWindowMinutes { get; init; } = 120;
+
+    /// <summary>Standard deviation (px) of a single dough-height reading around the true
+    /// surface. Measured about 0.8 px on a static jar; the effective value is about twice as
+    /// large because the noise is correlated over minutes, so 2.0 px keeps the computed
+    /// slope error honest. It is also the lower bound on the noise estimated from the fit,
+    /// so a handful of lucky samples cannot claim a precise rate.</summary>
+    public double RateNoiseFloorPx { get; init; } = 2.0;
+
+    /// <summary>The rise rate is published only once its standard error (%/h) is at most this
+    /// value. A rate right after a reset, from a few jittery frames, or across a step in
+    /// the data has a large error and is withheld instead of being published or clipped.</summary>
+    public double MaxRateStdErrPercentPerHour { get; init; } = 2.0;
 
     public double ResetDropFraction { get; init; } = 0.25;
 

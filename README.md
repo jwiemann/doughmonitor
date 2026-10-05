@@ -109,6 +109,15 @@ jar base are persisted with geometry, so a startup thumbnail does not redefine a
 existing session. Actual aspect changes invalidate the coordinate system; other
 geometry changes require consistent, valid jar/base/surface evidence before reset.
 
+The published rise rate (%/h) is the slope of the shortest recent span whose standard
+error is at most `MaxRateStdErrPercentPerHour` (default 2 %/h), looking back at most
+`SlopeWindowMinutes`. The error follows from the sampling (longer or denser spans pin the
+slope better) and the noise of a height reading (`RateNoiseFloorPx`, or the scatter around
+the fit if larger), so it needs more time on a short jar or a slow cadence than on a tall
+jar or a fast one. After a feeding reset, from a few jittery frames, or across a step in
+the data the error is large and no rate is published, instead of a clipped value such as
+-100 %/h. The trend uses the true rise, not its display clamp at 0 %.
+
 
 ## Expensive local calibration loop
 
@@ -233,7 +242,9 @@ boundary evidence still returns no measurement rather than inventing a surface.
       "DebugSaveAnnotatedImages": false
     },
     "Analysis": {
-      "SlopeWindowMinutes": 40,
+      "SlopeWindowMinutes": 120,
+      "RateNoiseFloorPx": 2.0,
+      "MaxRateStdErrPercentPerHour": 2.0,
       "ResetDropFraction": 0.25,
       "MinSamplesForFit": 8,
       "MaxEtaRelativeStdError": 0.15,
