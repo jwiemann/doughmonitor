@@ -23,6 +23,7 @@ public sealed record ReplayFrameRow(
     int? JarRightPx,
     string? JarColumnKind,
     double? DoughHeightPx,
+    double? DoughFloorPx,
     /// <summary>"ok" when the analyzer produced a reading, "unavailable" when it gated the
     /// measurement (implausible jump / collapse confirmation), "" when no measurement existed.</summary>
     string Reading,

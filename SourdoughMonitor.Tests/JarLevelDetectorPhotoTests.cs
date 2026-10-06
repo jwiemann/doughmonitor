@@ -144,7 +144,7 @@ public class JarLevelDetectorPhotoTests
 
     [Theory]
     [InlineData("ambient-fed.jpg", "ambient-grown.jpg", "ambient-dawn-", 60, 80)]
-    [InlineData("ambient-prior-fed-clear.jpg", "ambient-prior-grown.jpg", "ambient-cast-dawn-", 45, 60)]
+    [InlineData("ambient-prior-fed-clear.jpg", "ambient-prior-grown.jpg", "ambient-cast-dawn-", 55, 66)]
     public void DawnReacquisition_PreservesFeedingBaselineAcrossLightingGap(
         string fedFrame, string grownFrame, string dawnPrefix, double minimumRise, double maximumRise)
     {

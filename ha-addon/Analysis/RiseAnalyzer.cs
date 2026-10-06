@@ -24,6 +24,7 @@ public sealed class RiseAnalyzer
     };
 
     private double? _baselineDoughHeightPx;
+    private bool _baselineOnDoughFloor;
     private DateTimeOffset _sessionStart;
     private bool _peaked;
     private SigmoidFit? _lastFit;
@@ -56,7 +57,18 @@ public sealed class RiseAnalyzer
     {
         if (_lastMeasurementTime is { } lastTime && m.Time <= lastTime) return null;
         if (_baselineDoughHeightPx is not { } baseline || SessionExpired(m.Time))
-            return StartMeasuredSession(m.Time, m.DoughHeightPx);
+            return StartMeasuredSession(m.Time, m.DoughHeightPx, m.OnDoughFloor);
+        if (_baselineOnDoughFloor != m.OnDoughFloor)
+        {
+            // A floor-based session cannot take a glass-bottom height (floor not measured
+            // again yet, e.g. a restart without persisted geometry): unavailable, never mixed.
+            if (!m.OnDoughFloor) return null;
+            // The scene's floor was first measured mid-session. Convert the session to the
+            // floor basis rather than restarting it, so the history survives.
+            var rebased = RebaseToDoughFloor(m.JarBottomPx - m.DoughFloorPx!.Value);
+            if (rebased is null) return StartMeasuredSession(m.Time, m.DoughHeightPx, true);
+            baseline = rebased.Value;
+        }
 
         // Confirm feeding/handling on raw heights before the median can blend the
         // discontinuity into otherwise valid fermentation samples and their rate.
@@ -66,7 +78,7 @@ public sealed class RiseAnalyzer
             var pending = _pendingCollapseHeights ??= [];
             pending.Add(m.DoughHeightPx);
             if (pending.Count < _options.CollapseConfirmSamples) return null;
-            return StartMeasuredSession(m.Time, pending.Median());
+            return StartMeasuredSession(m.Time, pending.Median(), m.OnDoughFloor);
         }
         _pendingCollapseHeights?.Clear();
         if (IsImplausibleJump(m.DoughHeightPx, m.Time))
@@ -253,12 +265,41 @@ public sealed class RiseAnalyzer
         _lastFit = null;
     }
 
-    private void ResetSession(DateTimeOffset start, double? baselinePx)
+    /// <summary>Re-expresses the running session against the dough floor, which lies
+    /// <paramref name="offsetPx"/> above the glass bottom the baseline was measured from. Heights
+    /// shrink by the offset, so every stored rise percentage and slope scales by
+    /// baseline / (baseline - offset). Returns the new baseline, or null when the offset is
+    /// implausible (the session then restarts).</summary>
+    private double? RebaseToDoughFloor(double offsetPx)
+    {
+        if (_baselineDoughHeightPx is not { } baseline) return null;
+        var rebased = baseline - offsetPx;
+        if (offsetPx < 0 || rebased < baseline * 0.5) return null;
+        var scale = baseline / rebased;
+        for (var i = 0; i < _samples.Count; i++)
+            _samples[i] = _samples[i] with { RisePercent = _samples[i].RisePercent * scale };
+        for (var i = 0; i < _slopes.Count; i++)
+            _slopes[i] = _slopes[i] with { Slope = _slopes[i].Slope * scale };
+        _maximumSlope *= scale;
+        _peakReferenceRisePercent *= scale;
+        var window = _heightWindow.Select(height => height - offsetPx).ToArray();
+        _heightWindow.Clear();
+        foreach (var height in window) _heightWindow.Enqueue(height);
+        _lastAcceptedHeightPx -= offsetPx;
+        _pendingCollapseHeights?.Clear();
+        _lastFit = null;
+        _baselineDoughHeightPx = rebased;
+        _baselineOnDoughFloor = true;
+        return rebased;
+    }
+
+    private void ResetSession(DateTimeOffset start, double? baselinePx, bool onDoughFloor = false)
     {
         _samples.Clear();
         _slopes.Clear();
         _heightWindow.Clear();
         _baselineDoughHeightPx = baselinePx;
+        _baselineOnDoughFloor = onDoughFloor && baselinePx is not null;
         _sessionStart = start;
         _peaked = false;
         _lastFit = null;
@@ -270,9 +311,9 @@ public sealed class RiseAnalyzer
         _implausibleStreak = 0;
     }
 
-    private RiseReading StartMeasuredSession(DateTimeOffset time, double heightPx)
+    private RiseReading StartMeasuredSession(DateTimeOffset time, double heightPx, bool onDoughFloor)
     {
-        ResetSession(time, heightPx);
+        ResetSession(time, heightPx, onDoughFloor);
         _lastAcceptedHeightPx = heightPx;
         _lastMeasurementTime = time;
         SaveState();
@@ -288,7 +329,8 @@ public sealed class RiseAnalyzer
             _baselineDoughHeightPx,
             _sessionStart,
             _peaked,
-            _peakReferenceRisePercent);
+            _peakReferenceRisePercent,
+            _baselineOnDoughFloor);
         var path = ResolvePath(_options.StateFilePath);
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
@@ -311,6 +353,7 @@ public sealed class RiseAnalyzer
             _maximumSlope = 0;
             foreach (var slope in _slopes) _maximumSlope = Math.Max(_maximumSlope, slope.Slope);
             _baselineDoughHeightPx = state.BaselineDoughHeightPx;
+            _baselineOnDoughFloor = state.BaselineOnDoughFloor;
             _sessionStart = state.SessionStart;
             _peaked = state.Peaked;
             _peakReferenceRisePercent = state.PeakReferenceRisePercent;
@@ -346,5 +389,6 @@ public sealed class RiseAnalyzer
         double? BaselineDoughHeightPx,
         DateTimeOffset SessionStart,
         bool Peaked,
-        double? PeakReferenceRisePercent = null);
+        double? PeakReferenceRisePercent = null,
+        bool BaselineOnDoughFloor = false);
 }

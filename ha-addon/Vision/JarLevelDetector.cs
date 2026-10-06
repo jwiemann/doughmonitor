@@ -54,6 +54,20 @@ public sealed class JarLevelDetector(VisionOptions options)
     private bool _unverifiedExtent;
     private double? _referenceJarBottomPx;
 
+    /// <summary>Glass-base-to-dough-floor offsets (px) measured in the current scene, newest last.
+    /// Their median stands in for a frame whose warm body is too faint to show the floor; the
+    /// queue is seeded from the persisted geometry and cleared with every scene change.</summary>
+    private readonly Queue<double> _floorOffsets = new();
+
+    private const int FloorHistorySize = 9;
+
+    /// <summary>Offset samples needed before their median is trusted as the scene's offset.</summary>
+    private const int FloorMinSamples = 3;
+
+    /// <summary>Floor row measured by the latest successful column measurement, or null when
+    /// that frame showed no measurable warm body.</summary>
+    private double? _lastMeasuredFloorRow;
+
     private int _warmColumnSupport;
 
     /// <summary>Whether the latest column attempt confirmed a visible physical base.</summary>
@@ -68,12 +82,12 @@ public sealed class JarLevelDetector(VisionOptions options)
     /// the old geometry and is meaningless after a camera move.</summary>
     public event Action? SceneChanged;
 
-    private (int Left, int Right, int FrameWidth, int FrameHeight, double? Bottom)? _persistedGeometry =
+    private (int Left, int Right, int FrameWidth, int FrameHeight, double? Bottom, double? FloorOffset)? _persistedGeometry =
         LoadGeometry(options.GeometryStateFilePath);
 
     private bool _geometrySeeded;
 
-    private static (int Left, int Right, int FrameWidth, int FrameHeight, double? Bottom)? LoadGeometry(string? path)
+    private static (int Left, int Right, int FrameWidth, int FrameHeight, double? Bottom, double? FloorOffset)? LoadGeometry(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
         try
@@ -86,7 +100,9 @@ public sealed class JarLevelDetector(VisionOptions options)
                 node.TryGetProperty("frame_width", out var width) ? width.GetInt32() : 0,
                 node.TryGetProperty("frame_height", out var height) ? height.GetInt32() : 0,
                 node.TryGetProperty("jar_bottom_px", out var bottom) && bottom.ValueKind == JsonValueKind.Number
-                    ? bottom.GetDouble() : null);
+                    ? bottom.GetDouble() : null,
+                node.TryGetProperty("dough_floor_offset_px", out var floorOffset) && floorOffset.ValueKind == JsonValueKind.Number
+                    ? floorOffset.GetDouble() : null);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or KeyNotFoundException)
         {
@@ -106,9 +122,10 @@ public sealed class JarLevelDetector(VisionOptions options)
             File.WriteAllText(filePath, JsonSerializer.Serialize(new
             {
                 left, right, frame_width = frame.Width, frame_height = frame.Height,
-                jar_bottom_px = _referenceJarBottomPx
+                jar_bottom_px = _referenceJarBottomPx,
+                dough_floor_offset_px = HeldFloorOffset()
             }));
-            _persistedGeometry = (left, right, frame.Width, frame.Height, _referenceJarBottomPx);
+            _persistedGeometry = (left, right, frame.Width, frame.Height, _referenceJarBottomPx, HeldFloorOffset());
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -136,6 +153,15 @@ public sealed class JarLevelDetector(VisionOptions options)
     /// starting point stays visible even as the dough rises.</summary>
     public LevelMeasurement? Measure(byte[] jpegBytes, DateTimeOffset now, double? sessionBaselineHeightPx = null)
     {
+        _lastMeasuredFloorRow = null;
+        var measurement = MeasureFrame(jpegBytes, now, sessionBaselineHeightPx);
+        // Scene changes raised while measuring clear the floor history first, so this frame's
+        // floor joins the new scene's samples.
+        return measurement is null ? null : ApplyDoughFloor(measurement);
+    }
+
+    private LevelMeasurement? MeasureFrame(byte[] jpegBytes, DateTimeOffset now, double? sessionBaselineHeightPx)
+    {
         // Color decode: the dough is warm-toned (tan) while glass/wall/background are
         // neutral — the saturation step is the most stable surface signal under ambient
         // light (a fresh-fed light dough shows almost no brightness step at all).
@@ -156,6 +182,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         {
             _referenceFrameSize = (saved.FrameWidth, saved.FrameHeight);
             _referenceJarBottomPx = saved.Bottom;
+            SeedFloor(saved.FloorOffset);
         }
         var frameSize = (Width: rawColor.Width, Height: rawColor.Height);
         if (_referenceFrameSize is { } reference && reference != frameSize)
@@ -173,6 +200,7 @@ public sealed class JarLevelDetector(VisionOptions options)
                 _recentWarmColumns.Clear();
                 _recentWarmFronts.Clear();
                 _pendingWarmMove.Clear();
+                _floorOffsets.Clear();
                 _persistedGeometry = null;
                 _referenceJarBottomPx = null;
                 _warmColumnSupport = 0;
@@ -380,6 +408,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             _recentWarmColumns.Clear();
             _recentWarmFronts.Clear();
             _pendingWarmMove.Clear();
+            _floorOffsets.Clear();
             _recentWarmColumns.Enqueue((column.Left, column.Right));
             _warmColumnSupport = 0;
             SceneChanged?.Invoke();
@@ -500,10 +529,12 @@ public sealed class JarLevelDetector(VisionOptions options)
             jarColumn = jarColumn with { Left = curve[0].X, Right = curve[^1].X };
         if (LastDiagnostics is { } measuredDiagnostics)
             LastDiagnostics = measuredDiagnostics with { BandContrast = contrast, FinalRow = levelRow - jarColumn.Top };
-        // The jar's physical bottom doesn't move between frames, so the session-start dough
-        // surface can be re-derived in this frame's coordinates from this frame's jar bottom.
+        // The jar's physical bottom and the dough floor don't move between frames, so the
+        // session-start dough surface can be re-derived in this frame's coordinates. Heights
+        // are measured from the dough floor once the scene's floor offset is known.
+        var heightBaseRow = jarColumn.Top + jarBottom - (HeldFloorOffset() ?? 0);
         var sessionStartSurfaceY = sessionBaselineHeightPx is not null
-            ? (int?)Math.Round(jarColumn.Top + jarBottom - sessionBaselineHeightPx.Value)
+            ? (int?)Math.Round(heightBaseRow - sessionBaselineHeightPx.Value)
             : null;
         SaveDebugImage(
             gray,
@@ -514,8 +545,89 @@ public sealed class JarLevelDetector(VisionOptions options)
             now,
             visWarm,
             curve);
+        _lastMeasuredFloorRow = MeasureDoughFloorRow(color, gray, rect, levelRow, jarColumn.Top + jarBottom);
         return new LevelMeasurement(now, levelRow, jarColumn.Top, jarColumn.Top + jarBottom);
     }
+
+    /// <summary>The dough body's lower end in the strip centered in the jar column: the last
+    /// row of the contiguous warm run containing the row midway between surface and glass
+    /// bottom. "Warm" is the column-extent mask (neutral reference plus
+    /// <see cref="VisionOptions.WarmColumnSaturationStep"/>, warm tone), so a pale or backlit dough
+    /// without a warm body yields null rather than a guess. A run that reaches the glass
+    /// bottom is not a floor (warm table or foot reflection).</summary>
+    private int? MeasureDoughFloorRow(Mat color, Mat gray, Rect rect, int surfaceRow, int jarBottomRow)
+    {
+        var bottomLimit = Math.Min(jarBottomRow, color.Height - 1);
+        var midRow = (surfaceRow + bottomLimit) / 2;
+        var stripX = rect.X + rect.Width / 4;
+        var stripWidth = rect.Width / 2;
+        if (surfaceRow < 0 || bottomLimit - midRow < 4 || stripWidth < 8
+            || stripX + stripWidth > color.Width) return null;
+        ComputeTopQuarterRefs(color, gray, out var satNeutral, out _);
+        var threshold = Math.Min(satNeutral, options.NeutralReferenceCeiling)
+            + options.WarmColumnSaturationStep;
+        var minWarmPixels = options.WarmColumnMinFraction * stripWidth;
+        var floor = -1;
+        for (var y = midRow; y <= bottomLimit; y++)
+        {
+            var warm = 0;
+            for (var x = stripX; x < stripX + stripWidth; x++)
+            {
+                var pixel = color.At<Vec3b>(y, x);
+                var spread = Math.Max(pixel.Item0, Math.Max(pixel.Item1, pixel.Item2))
+                    - Math.Min(pixel.Item0, Math.Min(pixel.Item1, pixel.Item2));
+                if (spread > threshold && pixel.Item2 > pixel.Item0 + 1 && pixel.Item2 >= pixel.Item1) warm++;
+            }
+            if (warm < minWarmPixels)
+            {
+                if (y == midRow) return null;
+                break;
+            }
+            floor = y;
+        }
+        return floor < 0 || floor >= bottomLimit ? null : floor;
+    }
+
+    /// <summary>The scene's glass-base-to-floor offset (px): the median of the recent measured
+    /// offsets, or null until <see cref="FloorMinSamples"/> samples exist.</summary>
+    private double? HeldFloorOffset() =>
+        _floorOffsets.Count < FloorMinSamples ? null : Median(_floorOffsets.Select(o => (float)o).ToArray());
+
+    private void SeedFloor(double? persistedOffset)
+    {
+        if (persistedOffset is not { } offset || _floorOffsets.Count > 0) return;
+        for (var i = 0; i < FloorMinSamples; i++) _floorOffsets.Enqueue(offset);
+    }
+
+    /// <summary>Stamps the dough floor on the measurement: this frame's measured floor when its warm
+    /// body shows one (it follows a moved jar at once), else the glass bottom less the scene's held
+    /// offset. A surface at or below the floor is no dough measurement: the measurement then
+    /// carries no floor, which the analyzer reports as unavailable once its session is floor-based.</summary>
+    private LevelMeasurement ApplyDoughFloor(LevelMeasurement measurement)
+    {
+        double floor;
+        if (_lastMeasuredFloorRow is { } measured && IsPlausibleFloorOffset(measurement.JarBottomPx - measured))
+        {
+            floor = measured;
+            _floorOffsets.Enqueue(measurement.JarBottomPx - measured);
+            while (_floorOffsets.Count > FloorHistorySize) _floorOffsets.Dequeue();
+        }
+        else if (HeldFloorOffset() is { } held)
+        {
+            floor = measurement.JarBottomPx - held;
+        }
+        else
+        {
+            return measurement;
+        }
+        if (HeldFloorOffset() is { } heldOffset && _persistedGeometry is { } saved
+            && (saved.FloorOffset is not { } persisted || Math.Abs(persisted - heldOffset) >= 2))
+            PersistGeometry(saved.Left, saved.Right);
+        return floor <= measurement.DoughTopPx + 1 ? measurement : measurement with { DoughFloorPx = floor };
+    }
+
+    private bool IsPlausibleFloorOffset(double offset) =>
+        offset >= 0 && (_referenceFrameSize is not { } size || offset <= size.Height * 0.12);
 
     private readonly record struct GlowBlob(int X, int Y, int Width, int Height)
     {
@@ -1802,7 +1914,8 @@ public sealed class JarLevelDetector(VisionOptions options)
             measurement.Time,
             measurement.DoughTopPx + roiY,
             measurement.JarTopPx + roiY,
-            measurement.JarBottomPx + roiY);
+            measurement.JarBottomPx + roiY,
+            measurement.DoughFloorPx + roiY);
     }
 
     /// <summary>Hybrid dough surface detection, in order of evidence strength:

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.49
+
+- Measure the rise from the dough floor instead of the outer glass bottom. The dough body
+  ends above the thick glass base (17 px of a 121 px fresh dough depth on the Weck 742 jar),
+  so rises read about 14 % low. The floor is the lower end of the warm body in the jar's
+  central strip, measured on every frame; frames with too faint a body use the scene's
+  median glass-base offset (persisted with the geometry). `dough_height_px` now counts from
+  the floor, and `dough_floor_px` is published with the diagnostics.
+- A running session converts onto the floor basis when the floor is first measured (stored
+  rises and rates are rescaled, the session is kept). Until a scene has a floor, heights
+  run from the glass bottom as before, and a floor-based session rejects glass-bottom heights.
+- The replay CSV gains a `dough_floor_px` column.
+
 ## 0.1.48
 
 - Publish the starter rise rate only once it is statistically determined: the slope of the

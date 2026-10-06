@@ -80,7 +80,8 @@ public sealed class Worker(
         var reading = analyzer.Analyze(measurement);
         if (reading is null)
         {
-            logger.LogWarning("Rejected implausible dough-height jump; treating cycle as unavailable");
+            logger.LogWarning(
+                "Measurement rejected (implausible dough-height jump, pending feeding confirmation, or dough floor not re-measured yet); treating cycle as unavailable");
             await mqtt.PublishUnavailableMeasurementAsync(ct);
             return;
         }

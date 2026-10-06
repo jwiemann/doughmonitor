@@ -33,4 +33,5 @@
 ## Notes for detector fixes
 
 - The jar bottom should be inferred from the visible lower edge of the jar region when possible, not from the raw wall bounds alone.
+- Dough height is measured from the dough floor (the warm body's lower end, measured per frame; the scene's median glass-base offset stands in for faint frames), not from the glass bottom; `LevelMeasurement.DoughFloorPx` is null until a scene's offset is known, and `RiseAnalyzer` keeps one height basis per session.
 - When debugging detection issues, inspect both the live preview and any saved debug images in the debug output folder.

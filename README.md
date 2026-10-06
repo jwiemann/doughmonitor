@@ -81,7 +81,7 @@ writes to the output directory:
 
 - `readings.csv` — one row per frame: outcome (`detected` / `dark_frame` / `no_jar` /
   `no_surface` / `decode_failed`), method (`warm` / `backlit` / `band` / `edge`), lighting
-  statistics, jar bounds and geometry kind, dough top/base/height, analyzer gate, rise,
+  statistics, jar bounds and geometry kind, dough top/base/floor/height, analyzer gate, rise,
   rate, and predicted practical maximum
 - `summary.json` — aggregate counts, method distribution, final growth/reading state
 - `report.html` — rise curve with day markers, outcome timeline (dark frames marked), anomaly
@@ -108,6 +108,19 @@ shared by measurements and debug overlays. Reference dimensions and the supporte
 jar base are persisted with geometry, so a startup thumbnail does not redefine an
 existing session. Actual aspect changes invalidate the coordinate system; other
 geometry changes require consistent, valid jar/base/surface evidence before reset.
+
+Rise is measured as dough depth, from the dough floor to the surface, not from the outer
+glass bottom. The floor is where the dough body ends above the thick glass base: the lower
+end of the warm body in the jar's central strip, measured on every frame (so it follows a
+jar that was moved). A frame whose dough is too faint to show a warm body (pale or backlit)
+takes the glass bottom less the scene's median base-to-floor offset (last 9 measurements,
+at least three, persisted with the geometry, cleared on a scene change). Until a scene has
+an offset, heights run from the glass bottom. The first measured floor converts a running
+session onto the floor basis (stored rises and rates are rescaled) instead of restarting it,
+and a floor-based session never accepts a glass-bottom height. On the conical Weck 742 jar
+the glass base measured 17 px (camera far, 121 px fresh dough depth) and 34 px (camera
+close), so a rise measured from the glass bottom read about 14 % low at the far camera's
+fresh baseline.
 
 The published rise rate (%/h) is the slope of the shortest recent span whose standard
 error is at most `MaxRateStdErrPercentPerHour` (default 2 %/h), looking back at most

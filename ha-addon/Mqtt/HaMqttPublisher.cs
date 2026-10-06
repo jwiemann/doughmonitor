@@ -95,7 +95,8 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                 jar_bottom_px = measurement?.JarBottomPx,
                 jar_height_px =
                     measurement is not null ? (double?)(measurement.JarBottomPx - measurement.JarTopPx) : null,
-                dough_height_px = measurement?.DoughHeightPx
+                dough_height_px = measurement?.DoughHeightPx,
+                dough_floor_px = measurement?.DoughFloorPx
             },
             JsonOpts);
         await PublishAsync(DiagnosticsTopic, payload, retain: true, ct);

@@ -186,6 +186,7 @@ public static class ReplayRunner
                 JarRightPx: diagnostics?.JarRightPx,
                 JarColumnKind: diagnostics?.JarColumnKind,
                 DoughHeightPx: measurement?.DoughHeightPx,
+                DoughFloorPx: measurement?.DoughFloorPx,
                 Reading: measurement is null ? "" : reading is null ? "unavailable" : "ok",
                 RisePercent: reading?.RisePercent,
                 RiseRatePctPerHour: reading?.RiseRatePercentPerHour,
@@ -247,6 +248,7 @@ public static class ReplayRunner
         JarRightPx: null,
         JarColumnKind: null,
         DoughHeightPx: null,
+        DoughFloorPx: null,
         Reading: "",
         RisePercent: null,
         RiseRatePctPerHour: null,
@@ -282,7 +284,7 @@ public static class ReplayRunner
         var sb = new StringBuilder();
         sb.AppendLine(
             "file,time,time_source,outcome,method,frame_mean,frame_median,frame_p10,frame_p90,band_contrast,"
-            + "band_top_row,final_row,dough_top_px,jar_top_px,jar_bottom_px,jar_left_px,jar_right_px,jar_column_kind,dough_height_px,"
+            + "band_top_row,final_row,dough_top_px,jar_top_px,jar_bottom_px,jar_left_px,jar_right_px,jar_column_kind,dough_height_px,dough_floor_px,"
             + "reading,rise_percent,rise_rate_pct_per_h,predicted_peak_percent,"
             + "predicted_peak_time,peaked,new_session,debug_image");
         foreach (var r in rows)
@@ -308,6 +310,7 @@ public static class ReplayRunner
                 r.JarRightPx?.ToString(CultureInfo.InvariantCulture) ?? "",
                 r.JarColumnKind ?? "",
                 N(r.DoughHeightPx),
+                N(r.DoughFloorPx),
                 r.Reading,
                 N(r.RisePercent),
                 N(r.RiseRatePctPerHour),
