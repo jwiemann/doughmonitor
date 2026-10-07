@@ -68,6 +68,28 @@ public sealed class VisionOptions
     /// below it.</summary>
     public double WarmColumnMinFraction { get; init; } = 0.55;
 
+    /// <summary>A freshly proposed jar column whose width deviates from the established
+    /// width (persisted geometry or recent columns) by more than this fraction is rejected:
+    /// the established column is used and the proposal never enters the column history. A
+    /// glow reflection or foot highlight can pinch a proposal to half the jar's width.</summary>
+    public double ColumnWidthToleranceFraction { get; init; } = 0.25;
+
+    /// <summary>After this many consecutive frames whose column proposal was rejected by the
+    /// width check, the proposal is no longer discarded but validated as a column move (three
+    /// consistent measurements, then a scene change), so a genuinely moved camera or jar cannot
+    /// leave the detector stuck on the stale column.</summary>
+    public int ColumnWidthReliefFrames { get; init; } = 30;
+
+    /// <summary>When the primary surface search fails, the last good surface row is searched
+    /// again around its previous position for up to this many minutes. Covers an LED glow
+    /// sitting right above a rising surface, which blinds the primary search.</summary>
+    public int SurfaceContinuityMinutes { get; init; } = 30;
+
+    /// <summary>Fastest plausible surface movement for the continuity search, in pixels per
+    /// minute (mirrors <c>AnalysisOptions.MaxRisePxPerMinute</c>); the search band is this
+    /// times the elapsed minutes plus a fixed margin.</summary>
+    public double SurfaceContinuityMaxPxPerMinute { get; init; } = 4.0;
+
     /// <summary>Minimum length of a "genuinely dark" band as a fraction of the column
     /// height. Real dough fills a substantial part of the jar; brief dark dips (jar base
     /// shadow, lettering) do not.</summary>

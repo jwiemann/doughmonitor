@@ -38,6 +38,18 @@ public sealed class JarLevelDetector(VisionOptions options)
     /// the column and the growth baseline.</summary>
     private readonly Queue<(int Left, int Right)> _recentWarmColumns = new();
 
+    /// <summary>Row, jar base and time of the last successful measurement; anchors the
+    /// continuity search and the fallback measurement's base, and is dropped on every scene
+    /// change.</summary>
+    private (double Row, double Base, DateTimeOffset Time)? _lastGoodSurface;
+
+    /// <summary>Consecutive backlit frames that failed the width plausibility check AND
+    /// produced no measurement at all; reaching <see cref="VisionOptions.ColumnWidthReliefFrames"/>
+    /// hands the proposal to the move validation instead of holding the established column.
+    /// Reset by any produced measurement (the established column still works) and by the
+    /// scene-change paths.</summary>
+    private int _widthRejections;
+
     /// <summary>Warm-crossing anchors smoothed over nine samples for exposure flicker.
     /// These position the luminance search window; they are not reported as levels.</summary>
     private readonly Queue<int> _recentWarmFronts = new();
@@ -157,7 +169,15 @@ public sealed class JarLevelDetector(VisionOptions options)
         var measurement = MeasureFrame(jpegBytes, now, sessionBaselineHeightPx);
         // Scene changes raised while measuring clear the floor history first, so this frame's
         // floor joins the new scene's samples.
-        return measurement is null ? null : ApplyDoughFloor(measurement);
+        if (measurement is null) return null;
+        _lastGoodSurface = (measurement.DoughTopPx, measurement.JarBottomPx, now);
+        // A frame that still yields dough keeps the established column authoritative: only
+        // sustained total failure (nothing measurable for ColumnWidthReliefFrames frames
+        // while the width disagrees) may replace it. Otherwise a persistent measurement
+        // artifact (the glow-blob pinch) would out-wait the relief valve and wedge the
+        // column onto the artifact — exactly the failure the width check exists to stop.
+        _widthRejections = 0;
+        return ApplyDoughFloor(measurement);
     }
 
     private LevelMeasurement? MeasureFrame(byte[] jpegBytes, DateTimeOffset now, double? sessionBaselineHeightPx)
@@ -206,6 +226,8 @@ public sealed class JarLevelDetector(VisionOptions options)
                 _warmColumnSupport = 0;
                 _geometrySeeded = true;
                 _referenceFrameSize = frameSize;
+                _lastGoodSurface = null;
+                _widthRejections = 0;
                 SceneChanged?.Invoke();
             }
         }
@@ -245,6 +267,9 @@ public sealed class JarLevelDetector(VisionOptions options)
             var litColumn = FindBacklitColumn(img, glow);
             var litMeasurement = litColumn is not null
                 ? MeasureBacklit(img, glow, litColumn, now, frameStats, sessionBaselineHeightPx)
+                  ?? (_proposedColumn is null
+                      ? MeasureSurfaceContinuity(img, litColumn, now, frameStats, sessionBaselineHeightPx)
+                      : null)
                 : null;
             if (litMeasurement is not null)
             {
@@ -411,6 +436,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             _floorOffsets.Clear();
             _recentWarmColumns.Enqueue((column.Left, column.Right));
             _warmColumnSupport = 0;
+            _widthRejections = 0;
             SceneChanged?.Invoke();
         }
         else
@@ -736,7 +762,29 @@ public sealed class JarLevelDetector(VisionOptions options)
         {
             var heldLeft = DensestCluster(_recentWarmColumns.Select(c => c.Left), 3);
             var heldRight = DensestCluster(_recentWarmColumns.Select(c => c.Right), 3);
-            var moveTolerance = Math.Max(12, (heldRight - heldLeft) * 0.18);
+            var heldWidth = heldRight - heldLeft;
+            var widthRejected = heldWidth > 0
+                && Math.Abs(candidateRight - candidateLeft - heldWidth) > heldWidth * options.ColumnWidthToleranceFraction;
+            _widthRejections = widthRejected ? _widthRejections + 1 : 0;
+            if (widthRejected && _widthRejections >= options.ColumnWidthReliefFrames)
+            {
+                // Sustained disagreement is a real geometry change, not a one-frame pinch:
+                // hand the candidate to the normal pending-move validation, which raises
+                // SceneChanged once three consistent measurements agree.
+                _proposedColumn = new JarColumn(candidateLeft, candidateRight,
+                    Math.Max(2, height / 30), bottom, "backlit");
+                return _proposedColumn;
+            }
+            if (widthRejected)
+            {
+                // A pinched/inflated proposal (glow reflection, foot highlight) is not the
+                // jar: keep the established column and never let the proposal into the
+                // aggregates. Its rim-derived base is just as unreliable as its width.
+                _freshColumnExtent = null;
+                var heldBottom = _referenceJarBottomPx is { } reference ? (int)Math.Round(reference) : bottom;
+                return new JarColumn(heldLeft, heldRight, Math.Max(2, height / 30), heldBottom, "backlit");
+            }
+            var moveTolerance = Math.Max(12, heldWidth * 0.18);
             var moved = Math.Abs(candidateLeft - heldLeft) > moveTolerance
                 && Math.Abs(candidateRight - heldRight) > moveTolerance;
             if (moved)
@@ -768,6 +816,74 @@ public sealed class JarLevelDetector(VisionOptions options)
             ? (int?)Math.Round(column.Bottom - baseline) : null;
         SaveDebugImage(gray, column, level, column.Bottom, baselineY, now, null, curve);
         return new LevelMeasurement(now, level, column.Top, column.Bottom);
+    }
+
+    /// <summary>Fallback when the primary surface search fails: looks again near the last good
+    /// surface row (at most <see cref="VisionOptions.SurfaceContinuityMinutes"/> old) within the
+    /// distance the surface can plausibly have travelled. Takes the strongest bright-to-dark
+    /// row-profile step in that band, requires the sustained dark dough body below it, and
+    /// reports the row where the profile crosses halfway.</summary>
+    private LevelMeasurement? MeasureSurfaceContinuity(
+        Mat gray, JarColumn column, DateTimeOffset now,
+        (double? Mean, double? Median, double? P10, double? P90) frameStats,
+        double? sessionBaselineHeightPx)
+    {
+        if (_lastGoodSurface is not { } last) return null;
+        var elapsedMinutes = (now - last.Time).TotalMinutes;
+        if (elapsedMinutes < 0 || elapsedMinutes > options.SurfaceContinuityMinutes) return null;
+        var width = column.Right - column.Left;
+        if (width < 12 || column.Bottom <= column.Top + 20) return null;
+        var radius = (int)Math.Ceiling(options.SurfaceContinuityMaxPxPerMinute * Math.Max(1.0, elapsedMinutes)) + 8;
+        var inset = Math.Max(2, width / 10);
+        using var strip = gray[new Rect(column.Left + inset, 0, width - 2 * inset, gray.Height)];
+        var profile = MovingAverage(ReduceRowsMedian(strip), 3);
+        var span = Math.Max(12, gray.Height / 60);
+        var massRows = Math.Max(20, gray.Height / 15);
+        var lo = Math.Max(column.Top + span + 2, (int)Math.Round(last.Row) - radius);
+        var hi = Math.Min(Math.Min(column.Bottom, gray.Height) - massRows - span - 2, (int)Math.Round(last.Row) + radius);
+        var bestStep = 0.0;
+        var bestRow = -1;
+        var bestAbove = 0.0;
+        var bestBelow = 0.0;
+        for (var y = lo; y <= hi; y++)
+        {
+            var above = 0.0;
+            var below = 0.0;
+            for (var i = 0; i < span; i++)
+            {
+                above += profile[y - 2 - i];
+                below += profile[y + 2 + i];
+            }
+            var step = (above - below) / span;
+            if (step <= bestStep) continue;
+            bestStep = step;
+            bestRow = y;
+            bestAbove = above / span;
+            bestBelow = below / span;
+        }
+        if (bestRow < 0 || bestStep < options.MinAmbientBandContrast) return null;
+        var mid = (bestAbove + bestBelow) / 2;
+        var edge = bestRow;
+        for (var y = bestRow - span - 2; y <= bestRow + span; y++)
+        {
+            if (profile[y] >= mid) continue;
+            edge = y;
+            break;
+        }
+        var dough = 0;
+        for (var y = edge + 2; y < edge + 2 + massRows; y++)
+            if (profile[y] <= mid) dough++;
+        if (dough < massRows * 0.8) return null;
+
+        LastDiagnostics = WithFrameStats(new DetectionDiagnostics("continuity", bestStep, null, edge), frameStats);
+        var baselineY = sessionBaselineHeightPx is { } baseline
+            ? (int?)Math.Round(last.Base - baseline) : null;
+        SaveDebugImage(gray, column, edge, (int)last.Base, baselineY, now, null);
+        // The held jar base keeps the height basis continuous with the frames that anchored
+        // the search: column.Bottom is the column's rim bound, tens of px above the measured
+        // glass base, and deriving the floor offset from it would shift every fallback
+        // height against the established series.
+        return new LevelMeasurement(now, edge, column.Top, last.Base);
     }
 
     // Threshold the jar's own profile, not the dark room or LED-lit wall. The surface

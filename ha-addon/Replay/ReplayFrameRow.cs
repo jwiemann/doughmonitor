@@ -31,6 +31,10 @@ public sealed record ReplayFrameRow(
     double? RiseRatePctPerHour,
     double? PredictedPeakPercent,
     DateTimeOffset? PredictedPeakTime,
+    /// <summary>Earliest/latest peak time across the recent fit stability window and the
+    /// near-optimal fit set — how much the prediction actually knows.</summary>
+    DateTimeOffset? PredictedPeakTimeLow,
+    DateTimeOffset? PredictedPeakTimeHigh,
     bool Peaked,
     bool NewSession,
     /// <summary>Path of the annotated debug image written for this frame, relative to the replay output directory. Null when none was written.</summary>

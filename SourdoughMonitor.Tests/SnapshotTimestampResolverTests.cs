@@ -35,6 +35,17 @@ public class SnapshotTimestampResolverTests
         Assert.Equal(milliseconds, timestamp.Millisecond);
     }
 
+    [Fact]
+    public void TryParse_ParsesArchiveNamesAsUtc()
+    {
+        // The addon archives under UtcNow: parsing the digits as local time shifted every
+        // replay timestamp (and its report axis) by the machine's UTC offset.
+        var parsed = SnapshotTimestampResolver.TryParse("20261006_173047580.jpg", out var timestamp);
+        Assert.True(parsed);
+        Assert.Equal(TimeSpan.Zero, timestamp.Offset);
+        Assert.Equal(new DateTimeOffset(2026, 10, 6, 17, 30, 47, 580, TimeSpan.Zero), timestamp);
+    }
+
     [Theory]
     [InlineData("frame_0042.jpg")]
     [InlineData("snapshot.jpg")]

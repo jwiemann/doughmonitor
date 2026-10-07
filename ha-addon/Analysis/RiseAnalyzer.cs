@@ -13,6 +13,9 @@ public sealed class RiseAnalyzer
     /// <summary>Fewest samples a rate may be fitted from, whatever their error estimate.</summary>
     private const int MinRateSamples = 4;
 
+    /// <summary>Fewest accepted samples a session needs to be summarised when it ends.</summary>
+    private const int MinSamplesForSummary = 5;
+
     private readonly AnalysisOptions _options;
     private readonly List<Sample> _samples = [];
     private readonly List<SlopeSample> _slopes = [];
@@ -34,6 +37,9 @@ public sealed class RiseAnalyzer
     private List<double>? _pendingCollapseHeights;
     private double _maximumSlope;
     private double? _peakReferenceRisePercent;
+    private readonly List<(DateTimeOffset Time, double EtaHours)> _etaHistory = [];
+    private DateTimeOffset? _lastPublishedEta;
+    private SessionSummary? _pendingSummary;
 
     public RiseAnalyzer(AnalysisOptions options)
     {
@@ -48,9 +54,11 @@ public sealed class RiseAnalyzer
 
     public RiseReading Reset()
     {
+        var now = DateTimeOffset.UtcNow;
+        CaptureSessionSummary(now);
         ResetSession(DateTimeOffset.MinValue, null);
         SaveState();
-        return new RiseReading(DateTimeOffset.UtcNow, 0, null, null, null, false, NewSession: true);
+        return new RiseReading(now, 0, null, null, null, null, null, false, NewSession: true);
     }
 
     public RiseReading? Analyze(LevelMeasurement m)
@@ -101,37 +109,89 @@ public sealed class RiseAnalyzer
             _slopes.Add(new SlopeSample(m.Time, rate));
             _maximumSlope = Math.Max(_maximumSlope, rate);
         }
-        SigmoidFit? fit = null;
+        SigmoidFitResult? fitResult = null;
         if (!_peaked && _samples.Count >= _options.MinSamplesForFit)
         {
-            fit = SigmoidFitter.TryFit(_samples, _lastFit);
-            if (fit is not null && fit.RelativeStdError > _options.MaxEtaRelativeStdError)
-                fit = null;
+            fitResult = SigmoidFitter.TryFit(_samples, _lastFit);
+            if (fitResult is not null && fitResult.Best.RelativeStdError > _options.MaxEtaRelativeStdError)
+                fitResult = null;
         }
+        var fit = fitResult?.Best;
         if (fit is not null) _lastFit = fit;
         if (fit is not null && !ForecastIsInformative(fit, m.Time)) fit = null;
         if (slope is not null) UpdatePeakState(fit);
         if (_peaked) fit = null;
+        DateTimeOffset? eta = null, etaLow = null, etaHigh = null;
+        if (fit is not null && fitResult is not null)
+            (eta, etaLow, etaHigh) = TrackEta(m.Time, fit, fitResult.NearOptimal);
         SaveState();
         return new RiseReading(
             m.Time,
             Math.Round(ClampRisePercent(risePercent), 1),
             slope is null ? null : Math.Round(slope.Value, 1),
             fit is null ? null : Math.Round(ClampPredictedPeak(fit.L * _options.PeakFraction), 0),
-            fit is null ? null : _sessionStart.AddHours(fit.HoursAtFraction(_options.PeakFraction)),
+            eta,
+            etaLow,
+            etaHigh,
             _peaked,
             NewSession: false,
             SessionStart: _sessionStart);
     }
+
+    /// <summary>Records the accepted fit's peak ETA and returns the point ETA (only while the
+    /// recent estimates agree within <see cref="AnalysisOptions.MaxEtaSpreadMinutes"/>) plus
+    /// the low/high range over the recent estimates and the near-optimal fits.</summary>
+    private (DateTimeOffset? Point, DateTimeOffset Low, DateTimeOffset High) TrackEta(
+        DateTimeOffset now, SigmoidFit fit, IReadOnlyList<SigmoidFit> nearOptimal)
+    {
+        var cutoff = now.AddMinutes(-_options.EtaStabilityWindowMinutes);
+        _etaHistory.RemoveAll(e => e.Time < cutoff);
+        _etaHistory.Add((now, fit.HoursAtFraction(_options.PeakFraction)));
+        double windowMin = double.MaxValue, windowMax = double.MinValue;
+        foreach (var (_, hours) in _etaHistory)
+        {
+            windowMin = Math.Min(windowMin, hours);
+            windowMax = Math.Max(windowMax, hours);
+        }
+        double low = windowMin, high = windowMax;
+        foreach (var near in nearOptimal)
+        {
+            var hours = near.HoursAtFraction(_options.PeakFraction);
+            low = Math.Min(low, hours);
+            high = Math.Max(high, hours);
+        }
+        DateTimeOffset? point = null;
+        if ((windowMax - windowMin) * 60.0 <= _options.MaxEtaSpreadMinutes)
+        {
+            point = _sessionStart.AddHours(_etaHistory[^1].EtaHours);
+            _lastPublishedEta = point;
+        }
+        return (point, _sessionStart.AddHours(low), _sessionStart.AddHours(high));
+    }
+
+    private double SlopeEvidence => _options.MinSlopeEvidenceSigmas * _options.MaxRateStdErrPercentPerHour;
+
+    /// <summary>How far below the session's maximum rate the current rate must sit for a
+    /// measured turn: the statistical margin (rate error), but at least two fifths of the
+    /// maximum rate — a brief dip during a steep spurt (observed: 17 %/h wobble under a
+    /// 23.5 %/h spurt, mid-acceleration) is not a turn.</summary>
+    private const double TurnFractionOfMaxSlope = 0.4;
+
+    private double TurnMargin(double evidence) =>
+        Math.Max(evidence, TurnFractionOfMaxSlope * _maximumSlope);
 
     private bool ForecastIsInformative(SigmoidFit fit, DateTimeOffset now)
     {
         var count = Math.Max(1, _options.PeakConfirmWindows);
         if (_slopes.Count < count + 1 || _samples[^1].RisePercent < _options.MinRisePercentForPeak)
             return false;
-        if ((now - _sessionStart).TotalHours < fit.T0 || _maximumSlope <= 0
-            || _slopes[^1].Slope > _maximumSlope * 0.95)
+        if ((now - _sessionStart).TotalHours < fit.T0 || _maximumSlope <= 0)
             return false;
+        // The maximum rate must prove a real rise happened, and the current rate must sit
+        // measurably below it: while the rate is still at its maximum (accelerating or
+        // plateauing at the top), the curve does not identify a peak.
+        var evidence = SlopeEvidence;
+        if (_maximumSlope < evidence || _slopes[^1].Slope > _maximumSlope - TurnMargin(evidence)) return false;
         // An accelerating segment does not identify a maximum. Require a sustained,
         // positive but declining rise rate before exposing the extrapolation.
         for (var i = _slopes.Count - count; i < _slopes.Count; i++)
@@ -232,12 +292,24 @@ public sealed class RiseAnalyzer
         }
         var maxRise = _samples.Max(s => s.RisePercent);
         if (maxRise < _options.MinRisePercentForPeak) return;
+        // No peak without measured evidence that the dough really rose at some point.
+        var evidence = SlopeEvidence;
+        if (_maximumSlope < evidence) return;
         var flatOrFalling = true;
         for (var i = _slopes.Count - count; i < _slopes.Count; i++)
             if (_slopes[i].Slope > _options.FlatSlopePercentPerHour) flatOrFalling = false;
         // After resumed growth, a refit can still follow the old plateau. Require an
-        // observed new flat/falling period before confirming another peak.
-        var practicalPeak = _peakReferenceRisePercent is null && fit is not null && _samples.Count >= count;
+        // observed new flat/falling period before confirming another peak. A fit that
+        // merely reaches the current rise is not a peak while the rate is still near its
+        // peak rate (accelerating): the rate must have measurably turned, and the turn
+        // must hold across the confirming windows — a wobble in a noisy rate is not a turn.
+        var practicalPeak = _peakReferenceRisePercent is null && fit is not null && _samples.Count >= count
+            && _slopes[^1].Slope <= _maximumSlope - TurnMargin(evidence);
+        if (practicalPeak)
+        {
+            for (var i = Math.Max(1, _slopes.Count - count); i < _slopes.Count; i++)
+                if (_slopes[i].Slope <= 0 || _slopes[i].Slope > _slopes[i - 1].Slope) practicalPeak = false;
+        }
         if (practicalPeak && fit is not null)
         {
             for (var i = _samples.Count - count; i < _samples.Count; i++)
@@ -309,15 +381,45 @@ public sealed class RiseAnalyzer
         _lastAcceptedHeightPx = null;
         _lastMeasurementTime = null;
         _implausibleStreak = 0;
+        _etaHistory.Clear();
+        _lastPublishedEta = null;
+    }
+
+    /// <summary>Stores the summary of the session being replaced (kept only for sessions with
+    /// enough accepted samples to mean something) for <see cref="DequeueSessionSummary"/>.</summary>
+    private void CaptureSessionSummary(DateTimeOffset sessionEnd)
+    {
+        if (_samples.Count < MinSamplesForSummary) return;
+        var peak = _samples[0];
+        foreach (var sample in _samples)
+            if (sample.RisePercent > peak.RisePercent) peak = sample;
+        var error = _lastPublishedEta is { } eta ? (eta - peak.Time).TotalMinutes : (double?)null;
+        _pendingSummary = new SessionSummary(
+            _sessionStart,
+            sessionEnd,
+            peak.RisePercent,
+            peak.Time,
+            _slopes.Count > 0 ? _maximumSlope : null,
+            _lastPublishedEta,
+            error);
+    }
+
+    /// <summary>Returns the summary of the session that ended since the last call, or null.</summary>
+    public SessionSummary? DequeueSessionSummary()
+    {
+        var summary = _pendingSummary;
+        _pendingSummary = null;
+        return summary;
     }
 
     private RiseReading StartMeasuredSession(DateTimeOffset time, double heightPx, bool onDoughFloor)
     {
+        CaptureSessionSummary(time);
         ResetSession(time, heightPx, onDoughFloor);
         _lastAcceptedHeightPx = heightPx;
         _lastMeasurementTime = time;
         SaveState();
-        return new RiseReading(time, 0, null, null, null, false, NewSession: true, SessionStart: time);
+        return new RiseReading(time, 0, null, null, null, null, null, false, NewSession: true, SessionStart: time);
     }
 
     private void SaveState()

@@ -42,10 +42,25 @@ public sealed class AnalysisOptions
     /// <summary>Rise-rate slope (%/h) at or below which the curve is considered flat.</summary>
     public double FlatSlopePercentPerHour { get; init; } = 0.5;
 
-    /// <summary>Minimum observed rise (%) before trusting a maximum forecast or declaring
-    /// a flat/falling curve peaked. Small lag-phase changes or exposure drift must not
-    /// produce a baking-ready signal.</summary>
-    public double MinRisePercentForPeak { get; init; } = 25;
+    /// <summary>Minimum observed rise (%) before a maximum forecast or a flat/falling curve
+    /// may be declared a peak. Only blocks trivial drift: the protection against noise and
+    /// exposure drift comes from <see cref="MinSlopeEvidenceSigmas"/> (a measured rise must
+    /// have happened), so small but real rises (e.g. a kept starter) still get a forecast.</summary>
+    public double MinRisePercentForPeak { get; init; } = 5;
+
+    /// <summary>A peak or forecast requires the session's maximum rate to reach this many
+    /// times <see cref="MaxRateStdErrPercentPerHour"/> (evidence of a real rise), and the
+    /// current rate to sit measurably below that maximum (a measured turn — the margin
+    /// grows with steep sessions, see the analyzer).</summary>
+    public double MinSlopeEvidenceSigmas { get; init; } = 2.0;
+
+    /// <summary>Window (minutes) of recent peak-ETA estimates that must agree before a point
+    /// ETA is published.</summary>
+    public int EtaStabilityWindowMinutes { get; init; } = 30;
+
+    /// <summary>Largest spread (minutes) among the ETA estimates in the stability window for
+    /// which the point ETA is still published.</summary>
+    public double MaxEtaSpreadMinutes { get; init; } = 30;
 
     /// <summary>Physical plausibility gate: dough cannot rise or fall faster than this many
     /// pixels per minute. A raw reading that implies a faster change than

@@ -32,24 +32,29 @@ public class RiseAnalyzerForecastTests
     public void ObservedSlowdown_PredictsPracticalPeakThenConfirmsIt()
     {
         var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null });
-        RiseReading? atEightHours = null;
         RiseReading? atNineHours = null;
+        RiseReading? atTenHours = null;
         RiseReading? last = null;
         for (var step = 0; step <= 72; step++)
         {
             last = analyzer.Analyze(KnownGrowth(step));
-            if (step == 48) atEightHours = last;
             if (step == 54) atNineHours = last;
+            if (step == 60) atTenHours = last;
         }
-        Assert.NotNull(atEightHours?.PredictedPeakTime);
+        // The rate has to fall measurably below its maximum before any ETA is shown.
         Assert.NotNull(atNineHours?.PredictedPeakTime);
-        var truePeakHours = 6 + Math.Log(0.97 / 0.03) / 0.8;
-        var predictedHours = (atEightHours!.PredictedPeakTime!.Value - Start).TotalHours;
-        Assert.InRange(predictedHours, truePeakHours - 0.5, truePeakHours + 1);
-        Assert.InRange(atEightHours.PredictedPeakPercent!.Value, 92, 101);
-        Assert.False(atEightHours.Peaked);
-        Assert.InRange(Math.Abs((atNineHours!.PredictedPeakTime!.Value - atEightHours.PredictedPeakTime.Value).TotalHours), 0, 0.75);
+        Assert.NotNull(atTenHours?.PredictedPeakTime);
+        var truePeak = Start.AddHours(6 + Math.Log(0.97 / 0.03) / 0.8);
+        var predictedHours = (atNineHours!.PredictedPeakTime!.Value - Start).TotalHours;
+        Assert.InRange(predictedHours, (truePeak - Start).TotalHours - 0.5, (truePeak - Start).TotalHours + 1);
+        Assert.InRange(atNineHours.PredictedPeakPercent!.Value, 92, 101);
+        Assert.False(atNineHours.Peaked);
+        Assert.InRange(Math.Abs((atTenHours!.PredictedPeakTime!.Value - atNineHours.PredictedPeakTime.Value).TotalHours), 0, 0.75);
+        Assert.True(atNineHours.PredictedPeakTimeLow <= atNineHours.PredictedPeakTime
+            && atNineHours.PredictedPeakTime <= atNineHours.PredictedPeakTimeHigh);
         Assert.True(last!.Peaked);
         Assert.Null(last.PredictedPeakTime);
+        Assert.Null(last.PredictedPeakTimeLow);
+        Assert.Null(last.PredictedPeakTimeHigh);
     }
 }

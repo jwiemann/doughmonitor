@@ -14,6 +14,7 @@ public class RiseAnalyzerPeakRecoveryTests
         // These scenarios exercise peak state transitions on noise-free steps, so the
         // rate's uncertainty gate is turned off.
         MaxRateStdErrPercentPerHour = double.MaxValue,
+        MinSlopeEvidenceSigmas = 0,
         MinSamplesForFit = fitEnabled ? 8 : 1000,
         PeakConfirmWindows = 3,
         MedianWindowSize = 1,

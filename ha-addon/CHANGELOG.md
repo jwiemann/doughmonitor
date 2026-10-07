@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.1.50
+
+- Publish a peak time only once it is actually determined, and never as a bare point:
+  `peak_eta` appears only after the rise rate has measurably turned (two rate-error
+  margins below the session maximum) and the estimate has stopped moving (spread at most
+  `MaxEtaSpreadMinutes` over `EtaStabilityWindowMinutes` of fits), while the new
+  `peak_eta_low`/`peak_eta_high` timestamp sensors always show the current uncertainty
+  window. The sigmoid is refitted from several seeds every cycle instead of warm-starting
+  from the previous fit, so the prediction no longer depends on which fit preceded it.
+- A peak or forecast now requires evidence of a real rise and a measured turn: the
+  session's maximum rate must reach `MinSlopeEvidenceSigmas` (default 2) times the rate's
+  error bound, the current rate must sit measurably below it (the margin grows with steep
+  sessions — a wobbling 17 %/h dip under a 23.5 %/h spurt is not a turn), and the decline
+  must hold across the confirming windows. Flat lag-phase data, a degenerate low-plateau
+  fit and rate wobbles can no longer flag "Peaked" mid-rise (all three observed live on
+  2026-10-06). With that protection in place, `MinRisePercentForPeak` drops from 25 % to
+  5 % so small kept-starter sessions (a real +5.8 % rise on 2026-10-06) are no longer
+  excluded from prediction and their peak is declared.
+- Never show a stale prediction: after `mqtt.stale_after_minutes` (default 10) without a
+  usable measurement the state payload clears the measured values and sets `data_stale=ON`
+  (new "Data Stale" problem binary sensor, plus a "Last Reading" timestamp sensor). A
+  retained peak ETA can no longer masquerade as current through a detection gap.
+- Keep measuring when the LED glow sits directly above the dough surface. From ~17:30 on
+  2026-10-06 the dough rose past the light source, the glow-based jar column pinched to
+  half the jar width and every frame read "no surface" for 105 minutes — exactly the
+  decisive final rise. The jar column must now plausibly match the established width
+  (`ColumnWidthToleranceFraction`), and when the surface search fails a continuity search
+  around the last known surface (`SurfaceContinuityMinutes`,
+  `SurfaceContinuityMaxPxPerMinute`, reported as method "continuity") keeps the series
+  going. A sustained width disagreement (`ColumnWidthReliefFrames`) hands the candidate to
+  the normal move validation, so a real jar or camera change still resets the session.
+- Publish a summary when a session ends (`session_summary` topic, "Last Session Ended"
+  sensor with JSON attributes): session start/end, maximum rise and when it was reached,
+  maximum rate, and the prediction error (predicted peak minus the measured maximum).
+- Fix replay timestamps: archive file names are UTC but were parsed as local time, shifting
+  every replay output by the machine's UTC offset. They are parsed as UTC now, reports
+  render in local time and say so, and the replay CSV gains
+  `predicted_peak_time_low`/`predicted_peak_time_high`.
+
 ## 0.1.49
 
 - Measure the rise from the dough floor instead of the outer glass bottom. The dough body

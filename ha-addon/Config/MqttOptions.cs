@@ -15,4 +15,9 @@ public sealed class MqttOptions
     public string DiscoveryPrefix { get; init; } = "homeassistant";
 
     public bool DebugMode { get; init; }
+
+    /// <summary>Minutes without a usable measurement before the published reading is
+    /// declared stale: the state topic then carries data_stale=ON and the measured values
+    /// are cleared, so a retained peak ETA or rise value can never masquerade as current.</summary>
+    public int StaleAfterMinutes { get; init; } = 10;
 }

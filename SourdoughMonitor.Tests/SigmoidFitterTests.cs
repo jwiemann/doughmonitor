@@ -19,7 +19,7 @@ public class SigmoidFitterTests
     [Fact]
     public void TryFit_RisingSeries_PredictsPeakAboveCurrentRise()
     {
-        var fit = SigmoidFitter.TryFit(RisingSeries());
+        var fit = SigmoidFitter.TryFit(RisingSeries())?.Best;
         Assert.NotNull(fit);
         Assert.True(fit!.L > 190, $"plateau {fit.L} must exceed observed max 190");
     }
@@ -28,7 +28,7 @@ public class SigmoidFitterTests
     public void TryFit_RisingSeries_PredictsPeakTimeInFuture()
     {
         var samples = RisingSeries();
-        var fit = SigmoidFitter.TryFit(samples);
+        var fit = SigmoidFitter.TryFit(samples)?.Best;
         Assert.NotNull(fit);
         var lastHours = (samples[^1].Time - samples[0].Time).TotalHours;
         // This series is still rising well short of its fitted practical peak.
@@ -60,8 +60,8 @@ public class SigmoidFitterTests
         var samples = Enumerable.Range(0, 49)
             .Select(i => new Sample(Start.AddHours(i / 4.0), 100 / (1 + Math.Exp(-0.8 * (i / 4.0 - 6)))))
             .ToList();
-        var early = SigmoidFitter.TryFit(samples.Take(33).ToList());
-        var complete = SigmoidFitter.TryFit(samples, early);
+        var early = SigmoidFitter.TryFit(samples.Take(33).ToList())?.Best;
+        var complete = SigmoidFitter.TryFit(samples, early)?.Best;
         Assert.NotNull(early);
         Assert.NotNull(complete);
         var truePeakHours = 6 + Math.Log(0.97 / 0.03) / 0.8;
@@ -69,5 +69,22 @@ public class SigmoidFitterTests
         Assert.InRange(complete.HoursAtFraction(0.97), truePeakHours - 0.5, truePeakHours + 0.5);
         Assert.InRange(Math.Abs(complete.HoursAtFraction(0.97) - early!.HoursAtFraction(0.97)), 0, 0.5);
         Assert.True(complete.HoursAtFraction(0.97) < 12);
+    }
+
+    [Fact]
+    public void TryFit_ResultDoesNotDependOnThePreviousFit()
+    {
+        // A previous fit from a wrong local solution must not change the answer: the
+        // multi-start picks the lowest-error solution regardless of the warm start.
+        var samples = Enumerable.Range(0, 49)
+            .Select(i => new Sample(Start.AddHours(i / 4.0), 100 / (1 + Math.Exp(-0.8 * (i / 4.0 - 6)))))
+            .Take(40)
+            .ToList();
+        var cold = SigmoidFitter.TryFit(samples);
+        var misled = SigmoidFitter.TryFit(samples, new SigmoidFit(400, 0.1, 30, 0.5));
+        Assert.NotNull(cold);
+        Assert.NotNull(misled);
+        Assert.InRange(Math.Abs(cold!.Best.HoursAtFraction(0.97) - misled!.Best.HoursAtFraction(0.97)), 0, 0.1);
+        Assert.Contains(misled.Best, misled.NearOptimal);
     }
 }

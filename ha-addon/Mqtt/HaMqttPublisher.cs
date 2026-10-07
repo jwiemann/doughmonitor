@@ -25,6 +25,8 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
 
     private string DiagnosticsTopic => $"{options.DeviceId}/diagnostics";
 
+    private string SessionSummaryTopic => $"{options.DeviceId}/session_summary";
+
     public event Func<Task>? ResetRequested;
 
     public async Task ConnectAsync(CancellationToken ct)
@@ -56,13 +58,59 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                 rise_rate = reading.RiseRatePercentPerHour,
                 predicted_peak_percent = reading.PredictedPeakPercent,
                 peak_eta = reading.PredictedPeakTime?.ToString("O"),
+                peak_eta_low = reading.PredictedPeakTimeLow?.ToString("O"),
+                peak_eta_high = reading.PredictedPeakTimeHigh?.ToString("O"),
                 peaked = reading.Peaked ? "ON" : "OFF",
                 new_session = reading.NewSession,
+                data_stale = "OFF",
                 last_update = reading.Time.ToString("O"),
                 session_start = reading.SessionStart?.ToString("O")
             },
             JsonOpts);
         await PublishAsync(StateTopic, payload, retain: true, ct);
+    }
+
+    /// <summary>Marks the published reading as stale after a measurement outage: the
+    /// measured values are cleared while the time of the last real reading is kept, so a
+    /// retained peak ETA or rise percentage can never be mistaken for a current one.</summary>
+    public async Task PublishStaleAsync(RiseReading lastReading, CancellationToken ct)
+    {
+        var payload = JsonSerializer.Serialize(
+            new
+            {
+                rise_percent = (double?)null,
+                rise_rate = (double?)null,
+                predicted_peak_percent = (double?)null,
+                peak_eta = (string?)null,
+                peak_eta_low = (string?)null,
+                peak_eta_high = (string?)null,
+                peaked = "OFF",
+                new_session = false,
+                data_stale = "ON",
+                last_update = lastReading.Time.ToString("O"),
+                session_start = lastReading.SessionStart?.ToString("O")
+            },
+            JsonOpts);
+        await PublishAsync(StateTopic, payload, retain: true, ct);
+    }
+
+    /// <summary>Publishes the summary of a session that just ended, including the
+    /// prediction error (predicted peak time minus the measured maximum) for review.</summary>
+    public async Task PublishSessionSummaryAsync(SessionSummary summary, CancellationToken ct)
+    {
+        var payload = JsonSerializer.Serialize(
+            new
+            {
+                session_start = summary.SessionStart.ToString("O"),
+                session_end = summary.SessionEnd.ToString("O"),
+                max_rise_percent = summary.MaxRisePercent,
+                max_rise_time = summary.MaxRiseTime.ToString("O"),
+                max_rate = summary.MaxRatePercentPerHour,
+                predicted_peak_time = summary.PredictedPeakTime?.ToString("O"),
+                prediction_error_minutes = summary.PredictionErrorMinutes
+            },
+            JsonOpts);
+        await PublishAsync(SessionSummaryTopic, payload, retain: true, ct);
     }
 
     public Task PublishUnavailableMeasurementAsync(CancellationToken ct) =>
@@ -145,6 +193,34 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             deviceClass: "timestamp",
             stateTopicOverride: StateTopic);
         await PublishSensorConfigAsync(
+            "peak_eta_low",
+            "Peak ETA Earliest",
+            null,
+            "{{ value_json.peak_eta_low }}",
+            device,
+            ct,
+            deviceClass: "timestamp",
+            stateTopicOverride: StateTopic);
+        await PublishSensorConfigAsync(
+            "peak_eta_high",
+            "Peak ETA Latest",
+            null,
+            "{{ value_json.peak_eta_high }}",
+            device,
+            ct,
+            deviceClass: "timestamp",
+            stateTopicOverride: StateTopic);
+        await PublishSensorConfigAsync(
+            "last_update",
+            "Last Reading",
+            null,
+            "{{ value_json.last_update }}",
+            device,
+            ct,
+            deviceClass: "timestamp",
+            entityCategory: "diagnostic",
+            stateTopicOverride: StateTopic);
+        await PublishSensorConfigAsync(
             "session_start",
             "Session Started",
             null,
@@ -169,6 +245,25 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             binaryConfig,
             retain: true,
             ct);
+        var staleConfig = JsonSerializer.Serialize(
+            new
+            {
+                name = "Data Stale",
+                unique_id = $"{options.DeviceId}_data_stale",
+                state_topic = StateTopic,
+                value_template = "{{ value_json.data_stale }}",
+                payload_on = "ON",
+                payload_off = "OFF",
+                device_class = "problem",
+                availability_topic = AvailabilityTopic,
+                device
+            },
+            JsonOpts);
+        await PublishAsync(
+            $"{options.DiscoveryPrefix}/binary_sensor/{options.DeviceId}/data_stale/config",
+            staleConfig,
+            retain: true,
+            ct);
         var buttonConfig = JsonSerializer.Serialize(
             new
             {
@@ -184,6 +279,17 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             buttonConfig,
             retain: true,
             ct);
+        await PublishSensorConfigAsync(
+            "session_summary",
+            "Last Session Ended",
+            null,
+            "{{ value_json.session_end }}",
+            device,
+            ct,
+            deviceClass: "timestamp",
+            entityCategory: "diagnostic",
+            stateTopicOverride: SessionSummaryTopic,
+            jsonAttributesTopic: SessionSummaryTopic);
         if (options.DebugMode)
         {
             await PublishDebugDiscoveryAsync(device, ct);
@@ -266,7 +372,8 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
         CancellationToken ct,
         string? deviceClass = null,
         string? entityCategory = null,
-        string? stateTopicOverride = null)
+        string? stateTopicOverride = null,
+        string? jsonAttributesTopic = null)
     {
         var config = new Dictionary<string, object?>
         {
@@ -280,6 +387,7 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
         if (unit is not null) config["unit_of_measurement"] = unit;
         if (deviceClass is not null) config["device_class"] = deviceClass;
         if (entityCategory is not null) config["entity_category"] = entityCategory;
+        if (jsonAttributesTopic is not null) config["json_attributes_topic"] = jsonAttributesTopic;
         await PublishAsync(
             $"{options.DiscoveryPrefix}/sensor/{options.DeviceId}/{key}/config",
             JsonSerializer.Serialize(config, JsonOpts),

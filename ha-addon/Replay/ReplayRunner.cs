@@ -192,6 +192,8 @@ public static class ReplayRunner
                 RiseRatePctPerHour: reading?.RiseRatePercentPerHour,
                 PredictedPeakPercent: reading?.PredictedPeakPercent,
                 PredictedPeakTime: reading?.PredictedPeakTime,
+                PredictedPeakTimeLow: reading?.PredictedPeakTimeLow,
+                PredictedPeakTimeHigh: reading?.PredictedPeakTimeHigh,
                 Peaked: reading?.Peaked ?? false,
                 NewSession: reading?.NewSession ?? false,
                 DebugImage: debugImage));
@@ -254,6 +256,8 @@ public static class ReplayRunner
         RiseRatePctPerHour: null,
         PredictedPeakPercent: null,
         PredictedPeakTime: null,
+        PredictedPeakTimeLow: null,
+        PredictedPeakTimeHigh: null,
         Peaked: false,
         NewSession: false,
         DebugImage: null);
@@ -286,7 +290,7 @@ public static class ReplayRunner
             "file,time,time_source,outcome,method,frame_mean,frame_median,frame_p10,frame_p90,band_contrast,"
             + "band_top_row,final_row,dough_top_px,jar_top_px,jar_bottom_px,jar_left_px,jar_right_px,jar_column_kind,dough_height_px,dough_floor_px,"
             + "reading,rise_percent,rise_rate_pct_per_h,predicted_peak_percent,"
-            + "predicted_peak_time,peaked,new_session,debug_image");
+            + "predicted_peak_time,predicted_peak_time_low,predicted_peak_time_high,peaked,new_session,debug_image");
         foreach (var r in rows)
         {
             sb.AppendLine(string.Join(
@@ -316,6 +320,8 @@ public static class ReplayRunner
                 N(r.RiseRatePctPerHour),
                 N(r.PredictedPeakPercent),
                 r.PredictedPeakTime?.ToString("O", CultureInfo.InvariantCulture) ?? "",
+                r.PredictedPeakTimeLow?.ToString("O", CultureInfo.InvariantCulture) ?? "",
+                r.PredictedPeakTimeHigh?.ToString("O", CultureInfo.InvariantCulture) ?? "",
                 r.Peaked ? "true" : "false",
                 r.NewSession ? "true" : "false",
                 r.DebugImage ?? ""));
@@ -456,6 +462,9 @@ public static class ReplayRunner
         PeakFraction = src.PeakFraction,
         FlatSlopePercentPerHour = src.FlatSlopePercentPerHour,
         MinRisePercentForPeak = src.MinRisePercentForPeak,
+        MinSlopeEvidenceSigmas = src.MinSlopeEvidenceSigmas,
+        EtaStabilityWindowMinutes = src.EtaStabilityWindowMinutes,
+        MaxEtaSpreadMinutes = src.MaxEtaSpreadMinutes,
         MaxRisePxPerMinute = src.MaxRisePxPerMinute,
         JitterTolerancePx = src.JitterTolerancePx,
         MaxImplausibleJumpRejects = src.MaxImplausibleJumpRejects,

@@ -28,6 +28,8 @@ public static class ReplayReportWriter
         sb.Append(".thumb{max-width:220px;max-height:220px;display:block;margin:2px}");
         sb.Append("</style></head><body>");
         sb.Append("<h1>Sourdough replay report</h1>");
+        sb.Append(
+            $"<div>Times shown in local time ({TimeZoneInfo.Local.StandardName}); frame file names are UTC.</div>");
         sb.Append($"<div>Input: <code>{WebUtility.HtmlEncode(summary.InputFolder)}</code> | Config: <code>{WebUtility.HtmlEncode(summary.ConfigPath ?? "defaults")}</code>");
         if (summary.RoiApplied is { } roi)
         {
@@ -52,7 +54,7 @@ public static class ReplayReportWriter
                 $"<div>Final rise reading: {r.RisePercent:F1}% | "
                 + $"rate {r.RiseRatePercentPerHour?.ToString("F1") ?? "-"}%/h | "
                 + $"predicted peak {r.PredictedPeakPercent?.ToString("F0") ?? "-"}% at "
-                + $"{r.PredictedPeakTime?.ToString("yyyy-MM-dd HH:mm") ?? "-"} | peaked {r.Peaked}</div>");
+                + $"{(r.PredictedPeakTime is { } eta ? Lt(eta, "yyyy-MM-dd HH:mm") : "-")} | peaked {r.Peaked}</div>");
         }
         if (summary.Warnings.Count > 0)
         {
@@ -129,7 +131,7 @@ public static class ReplayReportWriter
             svg.Append(
                 $"<text x=\"{left - 6}\" y=\"{y + 3:F1}\" font-size=\"10\" fill=\"#888\" text-anchor=\"end\">{pct}%</text>");
         }
-        svg.Append($"<text x=\"{left + 6}\" y=\"{top - 6}\" font-size=\"10\" fill=\"#888\">{t0:yyyy-MM-dd HH:mm} → {t1:yyyy-MM-dd HH:mm} ({span:F0}h)</text>");
+        svg.Append($"<text x=\"{left + 6}\" y=\"{top - 6}\" font-size=\"10\" fill=\"#888\">{Lt(t0, "yyyy-MM-dd HH:mm")} → {Lt(t1, "yyyy-MM-dd HH:mm")} ({span:F0}h)</text>");
         svg.Append("</svg>");
         return svg.ToString();
     }
@@ -167,7 +169,7 @@ public static class ReplayReportWriter
         {
             var x = left + (hourStart - t0).TotalHours / Math.Max(1, span) * plotWidth;
             sb.Append(
-                $"<text x=\"{x:F1}\" y=\"58\" font-size=\"9\" fill=\"#888\" text-anchor=\"middle\">{hourStart:MM-dd HH}</text>");
+                $"<text x=\"{x:F1}\" y=\"58\" font-size=\"9\" fill=\"#888\" text-anchor=\"middle\">{Lt(hourStart, "MM-dd HH")}</text>");
             hourStart = hourStart.AddHours(6);
         }
         sb.Append("</svg>");
@@ -194,7 +196,7 @@ public static class ReplayReportWriter
                 : r.Reading == "unavailable" ? "rejected"
                 : "";
             sb.Append(
-                $"<tr class=\"{css}\"><td>{r.Time:yyyy-MM-dd HH:mm:ss}</td>"
+                $"<tr class=\"{css}\"><td>{Lt(r.Time, "yyyy-MM-dd HH:mm:ss")}</td>"
                 + $"<td class=\"outcome\">{WebUtility.HtmlEncode(r.Outcome)}</td>"
                 + $"<td>{WebUtility.HtmlEncode(r.Method ?? "")}</td>"
                 + $"<td>{F1(r.FrameP90)}</td><td>{F1(r.BandContrast)}</td>"
@@ -221,11 +223,16 @@ public static class ReplayReportWriter
             sb.Append(
                 $"<div style=\"display:inline-block;margin:4px;vertical-align:top\">"
                 + $"<img class=\"thumb\" src=\"{img}\" loading=\"lazy\">"
-                + $"<div style=\"font-size:10px\">{r.Time:MM-dd HH:mm} · {outcome}</div></div>");
+                + $"<div style=\"font-size:10px\">{Lt(r.Time, "MM-dd HH:mm")} · {outcome}</div></div>");
         }
         return sb.ToString();
     }
 
     private static string F1(double? value) =>
         value?.ToString("F1", CultureInfo.InvariantCulture) ?? "";
+
+    /// <summary>Wall-clock rendering for report labels: the row times are UTC (the archive
+    /// file names), and readers compare them with their own clocks.</summary>
+    private static string Lt(DateTimeOffset time, string format) =>
+        time.ToLocalTime().ToString(format);
 }

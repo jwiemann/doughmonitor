@@ -14,13 +14,20 @@ public sealed class Worker(
     MonitorOptions options,
     ILogger<Worker> logger) : BackgroundService
 {
+    private RiseReading? _lastReading;
+
+    private double _silentMinutes;
+
+    private bool _stalePublished;
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         mqtt.ResetRequested += async () =>
         {
             logger.LogInformation("Manual session reset via MQTT");
             var reading = analyzer.Reset();
-            await mqtt.PublishReadingAsync(reading, ct);
+            await PublishSessionEndAsync(ct);
+            await TrackPublishedAsync(reading, ct);
         };
         // Geometry changes invalidate the pixel-height baseline. The detector verifies
         // the new jar/base/surface; lighting and sampling-resolution changes retain it.
@@ -63,6 +70,7 @@ public sealed class Worker(
         if (jpeg is null)
         {
             logger.LogWarning("No snapshot from Frigate");
+            await MarkSilentAsync(ct);
             return;
         }
 
@@ -75,6 +83,7 @@ public sealed class Worker(
         if (measurement is null)
         {
             await mqtt.PublishUnavailableMeasurementAsync(ct);
+            await MarkSilentAsync(ct);
             return;
         }
         var reading = analyzer.Analyze(measurement);
@@ -83,15 +92,51 @@ public sealed class Worker(
             logger.LogWarning(
                 "Measurement rejected (implausible dough-height jump, pending feeding confirmation, or dough floor not re-measured yet); treating cycle as unavailable");
             await mqtt.PublishUnavailableMeasurementAsync(ct);
+            await MarkSilentAsync(ct);
             return;
         }
-        await mqtt.PublishReadingAsync(reading, ct);
+        // A reading that starts a new session has just ended the previous one: publish its
+        // summary (max rise, measured peak, prediction error) before the fresh session.
+        await PublishSessionEndAsync(ct);
+        await TrackPublishedAsync(reading, ct);
         logger.LogInformation(
             "Rise {Rise}% | Rate {Rate}%/h | ETA {Eta} | Peaked {Peaked}",
             reading.RisePercent,
             reading.RiseRatePercentPerHour,
             reading.PredictedPeakTime,
             reading.Peaked);
+    }
+
+    /// <summary>Records a fresh reading and publishes it; resets the measurement-outage
+    /// bookkeeping so a later outage starts counting from now.</summary>
+    private async Task TrackPublishedAsync(RiseReading reading, CancellationToken ct)
+    {
+        _lastReading = reading;
+        _silentMinutes = 0;
+        _stalePublished = false;
+        await mqtt.PublishReadingAsync(reading, ct);
+    }
+
+    /// <summary>Publishes the summary of a session the analyzer just closed, if any.</summary>
+    private async Task PublishSessionEndAsync(CancellationToken ct)
+    {
+        if (analyzer.DequeueSessionSummary() is { } summary)
+            await mqtt.PublishSessionSummaryAsync(summary, ct);
+    }
+
+    /// <summary>Counts a cycle without a usable measurement. Once the outage exceeds the
+    /// configured threshold the retained reading is declared stale exactly once, so old
+    /// values (especially the peak ETA) cannot look current during a detection gap.</summary>
+    private async Task MarkSilentAsync(CancellationToken ct)
+    {
+        _silentMinutes += options.Frigate.SampleIntervalMinutes;
+        if (_stalePublished || _lastReading is null || _silentMinutes < options.Mqtt.StaleAfterMinutes)
+            return;
+        _stalePublished = true;
+        logger.LogWarning(
+            "No usable measurement for {Minutes} min; marking the published reading stale",
+            _silentMinutes);
+        await mqtt.PublishStaleAsync(_lastReading, ct);
     }
 
     /// <summary>Fetches a snapshot and runs detection, retrying a few times within this

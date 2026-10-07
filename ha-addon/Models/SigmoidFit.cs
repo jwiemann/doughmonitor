@@ -15,4 +15,9 @@ namespace SourdoughMonitor.Models
             return Math.Clamp(hours, 0.0, 720.0);
         }
     }
+
+    /// <summary>Best fit plus every converged multi-start solution whose error is statistically
+    /// indistinguishable from it (approximate 95% confidence region); the spread of their
+    /// peak times is the forecast's uncertainty.</summary>
+    public sealed record SigmoidFitResult(SigmoidFit Best, IReadOnlyList<SigmoidFit> NearOptimal);
 }
