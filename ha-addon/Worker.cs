@@ -20,6 +20,10 @@ public sealed class Worker(
 
     private bool _stalePublished;
 
+    private readonly SurfaceLossMonitor _surfaceLoss = new(options.Analysis);
+
+    private bool _lossWarned;
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         mqtt.ResetRequested += async () =>
@@ -74,11 +78,25 @@ public sealed class Worker(
             return;
         }
 
+        var lossMinutes = _surfaceLoss.Observe(
+            detector.LastOutcome, _lastReading?.Peaked == true, DateTimeOffset.UtcNow);
+        if (lossMinutes is null)
+        {
+            _lossWarned = false;
+        }
+        else if (!_lossWarned)
+        {
+            _lossWarned = true;
+            logger.LogWarning(
+                "No dough surface for {Minutes:F0} min after a confirmed peak; the detector may have lost the surface (collapse?)",
+                lossMinutes);
+        }
+
         // Publish debug image and diagnostics via MQTT when debug mode is enabled
         if (options.Mqtt.DebugMode && detector.LatestAnnotatedImageBytes is not null)
         {
             await mqtt.PublishDebugImageAsync(detector.LatestAnnotatedImageBytes, ct);
-            await mqtt.PublishDetectionDiagnosticsAsync(detector.LastDiagnostics, measurement, ct);
+            await mqtt.PublishDetectionDiagnosticsAsync(detector.LastDiagnostics, measurement, lossMinutes, ct);
         }
         if (measurement is null)
         {

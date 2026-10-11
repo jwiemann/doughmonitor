@@ -59,6 +59,12 @@ public sealed class JarLevelDetector(VisionOptions options)
     /// <summary>Validated replacement extents awaiting three consistent measurements.</summary>
     private readonly Queue<(int Left, int Right)> _pendingWarmMove = new();
 
+    /// <summary>Wide-pass surface candidates awaiting
+    /// <see cref="VisionOptions.SurfaceReacquireFrames"/> consecutive agreeing frames before
+    /// a surface outside the rate-limited continuity band is accepted; protects against
+    /// latching onto a static artifact.</summary>
+    private readonly Queue<int> _pendingReacquireRows = new();
+
     private JarColumn? _proposedColumn;
     private (int Left, int Right)? _freshColumnExtent;
     private int? _freshWarmFront;
@@ -171,6 +177,8 @@ public sealed class JarLevelDetector(VisionOptions options)
         // floor joins the new scene's samples.
         if (measurement is null) return null;
         _lastGoodSurface = (measurement.DoughTopPx, measurement.JarBottomPx, now);
+        // Re-acquire candidates must be consecutive: a real measurement ends the streak.
+        _pendingReacquireRows.Clear();
         // A frame that still yields dough keeps the established column authoritative: only
         // sustained total failure (nothing measurable for ColumnWidthReliefFrames frames
         // while the width disagrees) may replace it. Otherwise a persistent measurement
@@ -227,6 +235,7 @@ public sealed class JarLevelDetector(VisionOptions options)
                 _geometrySeeded = true;
                 _referenceFrameSize = frameSize;
                 _lastGoodSurface = null;
+                _pendingReacquireRows.Clear();
                 _widthRejections = 0;
                 SceneChanged?.Invoke();
             }
@@ -256,6 +265,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         if (detectedGlow is null && (p90 < options.MinFrameIntensity || p90 - p10 < options.MinFrameContrast))
         {
             _pendingWarmMove.Clear();
+            _pendingReacquireRows.Clear();
             LastOutcome = "dark_frame";
             LastDiagnostics = WithFrameStats(new DetectionDiagnostics("dark", 0, null, null), frameStats);
             if (options.DebugSaveAnnotatedImages)
@@ -328,6 +338,20 @@ public sealed class JarLevelDetector(VisionOptions options)
                 // switching to a wall or unrelated fallback column.
                 if (_warmColumnSupport >= 3 || _proposedColumn is not null)
                 {
+                    // Same continuity fallback as the backlit path — and the same guard:
+                    // never on a proposed column. Accepted straight, without geometry
+                    // bookkeeping: a fallback measurement extends the height series but
+                    // must not vote this frame's raw column extent into the history (that
+                    // pinched the held column on replay and lost real surfaces).
+                    if (_proposedColumn is null)
+                    {
+                        var continuity = MeasureSurfaceContinuity(img, warmColumn, now, frameStats, sessionBaselineHeightPx);
+                        if (continuity is not null)
+                        {
+                            LastOutcome = "detected";
+                            return continuity;
+                        }
+                    }
                     LastOutcome = "no_surface";
                     LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
                     SaveDebugImage(img, warmColumn, null, warmColumn.Bottom, null, now, visWarm);
@@ -818,29 +842,90 @@ public sealed class JarLevelDetector(VisionOptions options)
         return new LevelMeasurement(now, level, column.Top, column.Bottom);
     }
 
-    /// <summary>Fallback when the primary surface search fails: looks again near the last good
-    /// surface row (at most <see cref="VisionOptions.SurfaceContinuityMinutes"/> old) within the
-    /// distance the surface can plausibly have travelled. Takes the strongest bright-to-dark
-    /// row-profile step in that band, requires the sustained dark dough body below it, and
-    /// reports the row where the profile crosses halfway.</summary>
+    /// <summary>Fallback when the primary surface search fails. Two passes over the row
+    /// profile of the established column: (1) a rate-limited band around the last good
+    /// surface row (at most <see cref="VisionOptions.SurfaceContinuityMinutes"/> old, within
+    /// the distance the surface can plausibly have travelled), accepted immediately;
+    /// (2) when that fails or the anchor is stale, a wide pass over the whole column — a
+    /// collapse can drop the surface arbitrarily far — accepted only after
+    /// <see cref="VisionOptions.SurfaceReacquireFrames"/> consecutive candidates agree.
+    /// Both take the strongest bright-to-dark row-profile step, require the sustained dark
+    /// dough body below it, and report the row where the profile crosses halfway.</summary>
     private LevelMeasurement? MeasureSurfaceContinuity(
         Mat gray, JarColumn column, DateTimeOffset now,
         (double? Mean, double? Median, double? P10, double? P90) frameStats,
         double? sessionBaselineHeightPx)
     {
         if (_lastGoodSurface is not { } last) return null;
-        var elapsedMinutes = (now - last.Time).TotalMinutes;
-        if (elapsedMinutes < 0 || elapsedMinutes > options.SurfaceContinuityMinutes) return null;
+        // 0 disables the continuity fallback entirely (both passes).
+        if (options.SurfaceContinuityMinutes <= 0) return null;
         var width = column.Right - column.Left;
         if (width < 12 || column.Bottom <= column.Top + 20) return null;
-        var radius = (int)Math.Ceiling(options.SurfaceContinuityMaxPxPerMinute * Math.Max(1.0, elapsedMinutes)) + 8;
         var inset = Math.Max(2, width / 10);
         using var strip = gray[new Rect(column.Left + inset, 0, width - 2 * inset, gray.Height)];
         var profile = MovingAverage(ReduceRowsMedian(strip), 3);
         var span = Math.Max(12, gray.Height / 60);
         var massRows = Math.Max(20, gray.Height / 15);
-        var lo = Math.Max(column.Top + span + 2, (int)Math.Round(last.Row) - radius);
-        var hi = Math.Min(Math.Min(column.Bottom, gray.Height) - massRows - span - 2, (int)Math.Round(last.Row) + radius);
+        var elapsedMinutes = (now - last.Time).TotalMinutes;
+        if (elapsedMinutes < 0) return null;
+        var fresh = elapsedMinutes <= options.SurfaceContinuityMinutes;
+        var radius = (int)Math.Ceiling(options.SurfaceContinuityMaxPxPerMinute * Math.Max(1.0, elapsedMinutes)) + 8;
+        if (fresh)
+        {
+            var lo = Math.Max(column.Top + span + 2, (int)Math.Round(last.Row) - radius);
+            var hi = Math.Min(Math.Min(column.Bottom, gray.Height) - massRows - span - 2, (int)Math.Round(last.Row) + radius);
+            if (FindContinuityEdge(profile, lo, hi, span, massRows, options.MinAmbientBandContrast) is { } band)
+            {
+                LastDiagnostics = WithFrameStats(new DetectionDiagnostics("continuity", band.Step, null, band.Edge), frameStats);
+                var baselineY = sessionBaselineHeightPx is { } baseline
+                    ? (int?)Math.Round(last.Base - baseline) : null;
+                SaveDebugImage(gray, column, band.Edge, (int)last.Base, baselineY, now, null);
+                // The held jar base keeps the height basis continuous with the frames that
+                // anchored the search: column.Bottom is the column's rim bound, tens of px
+                // above the measured glass base, and deriving the floor offset from it would
+                // shift every fallback height against the established series.
+                return new LevelMeasurement(now, band.Edge, column.Top, last.Base);
+            }
+        }
+        // Wide pass: the surface may have collapsed below the band. A fresh anchor still
+        // forbids implausibly fast rises (dough cannot out-climb
+        // SurfaceContinuityMaxPxPerMinute); only downward jumps are unbounded. A stale
+        // anchor allows the whole column — overnight growth is plausible at any row.
+        var wideLo = fresh
+            ? Math.Max(column.Top + span + 2, (int)Math.Round(last.Row) - radius)
+            : column.Top + span + 2;
+        // The dough surface cannot sit at or below the glass base the height basis is
+        // measured from; on a drifted column the strongest step is often the base rim or
+        // the stand edge below it.
+        var wideHi = Math.Min(
+            Math.Min(column.Bottom, gray.Height) - massRows - span - 2,
+            (int)last.Base - 2);
+        if (wideHi <= wideLo
+            || FindContinuityEdge(profile, wideLo, wideHi, span, massRows, options.MinAmbientBandContrast) is not { } wide)
+        {
+            _pendingReacquireRows.Clear();
+            return null;
+        }
+        var tolerance = Math.Max(8, (column.Bottom - column.Top) / 40);
+        if (_pendingReacquireRows.Count > 0 && Math.Abs(wide.Edge - _pendingReacquireRows.Last()) > tolerance)
+            _pendingReacquireRows.Clear();
+        _pendingReacquireRows.Enqueue(wide.Edge);
+        if (_pendingReacquireRows.Count < options.SurfaceReacquireFrames) return null;
+        _pendingReacquireRows.Clear();
+        LastDiagnostics = WithFrameStats(new DetectionDiagnostics("reacquire", wide.Step, null, wide.Edge), frameStats);
+        var reacquireBaselineY = sessionBaselineHeightPx is { } reacquireBaseline
+            ? (int?)Math.Round(last.Base - reacquireBaseline) : null;
+        SaveDebugImage(gray, column, wide.Edge, (int)last.Base, reacquireBaselineY, now, null);
+        return new LevelMeasurement(now, wide.Edge, column.Top, last.Base);
+    }
+
+    /// <summary>The strongest bright-to-dark step of the smoothed row profile within
+    /// [<paramref name="lo"/>, <paramref name="hi"/>]: the row where the profile crosses
+    /// halfway between the levels above and below the step, gated on the step contrast and
+    /// on the sustained dark dough body below it. Null when no qualifying edge exists.</summary>
+    private static (int Edge, double Step)? FindContinuityEdge(
+        double[] profile, int lo, int hi, int span, int massRows, double minContrast)
+    {
         var bestStep = 0.0;
         var bestRow = -1;
         var bestAbove = 0.0;
@@ -861,7 +946,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             bestAbove = above / span;
             bestBelow = below / span;
         }
-        if (bestRow < 0 || bestStep < options.MinAmbientBandContrast) return null;
+        if (bestRow < 0 || bestStep < minContrast) return null;
         var mid = (bestAbove + bestBelow) / 2;
         var edge = bestRow;
         for (var y = bestRow - span - 2; y <= bestRow + span; y++)
@@ -874,16 +959,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         for (var y = edge + 2; y < edge + 2 + massRows; y++)
             if (profile[y] <= mid) dough++;
         if (dough < massRows * 0.8) return null;
-
-        LastDiagnostics = WithFrameStats(new DetectionDiagnostics("continuity", bestStep, null, edge), frameStats);
-        var baselineY = sessionBaselineHeightPx is { } baseline
-            ? (int?)Math.Round(last.Base - baseline) : null;
-        SaveDebugImage(gray, column, edge, (int)last.Base, baselineY, now, null);
-        // The held jar base keeps the height basis continuous with the frames that anchored
-        // the search: column.Bottom is the column's rim bound, tens of px above the measured
-        // glass base, and deriving the floor offset from it would shift every fallback
-        // height against the established series.
-        return new LevelMeasurement(now, edge, column.Top, last.Base);
+        return (edge, bestStep);
     }
 
     // Threshold the jar's own profile, not the dark room or LED-lit wall. The surface

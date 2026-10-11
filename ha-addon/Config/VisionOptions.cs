@@ -81,14 +81,24 @@ public sealed class VisionOptions
     public int ColumnWidthReliefFrames { get; init; } = 30;
 
     /// <summary>When the primary surface search fails, the last good surface row is searched
-    /// again around its previous position for up to this many minutes. Covers an LED glow
-    /// sitting right above a rising surface, which blinds the primary search.</summary>
+    /// again around its previous position. Covers an LED glow sitting right above a rising
+    /// surface, which blinds the primary search. The value limits only the rate-limited band
+    /// (how far the surface may have travelled from the anchor); once it is exceeded, or the
+    /// band yields nothing, the confirmed wide pass may search the whole column to re-acquire
+    /// a collapsed or long-lost surface. 0 disables the continuity fallback entirely.</summary>
     public int SurfaceContinuityMinutes { get; init; } = 30;
 
     /// <summary>Fastest plausible surface movement for the continuity search, in pixels per
     /// minute (mirrors <c>AnalysisOptions.MaxRisePxPerMinute</c>); the search band is this
-    /// times the elapsed minutes plus a fixed margin.</summary>
+    /// times the elapsed minutes plus a fixed margin. Only upward movement is rate-limited:
+    /// collapsed dough can fall arbitrarily fast.</summary>
     public double SurfaceContinuityMaxPxPerMinute { get; init; } = 4.0;
+
+    /// <summary>Consecutive frames whose wide-scan surface candidates agree before a surface
+    /// outside the rate-limited continuity band is accepted; protects against latching onto a
+    /// static artifact. At the default one-minute sampling this delays re-acquisition by
+    /// about this many minutes.</summary>
+    public int SurfaceReacquireFrames { get; init; } = 3;
 
     /// <summary>Minimum length of a "genuinely dark" band as a fraction of the column
     /// height. Real dough fills a substantial part of the jar; brief dark dips (jar base

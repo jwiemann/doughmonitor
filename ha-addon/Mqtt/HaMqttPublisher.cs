@@ -125,6 +125,7 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
     public async Task PublishDetectionDiagnosticsAsync(
         DetectionDiagnostics? diagnostics,
         LevelMeasurement? measurement,
+        double? surfaceLostAfterPeakMinutes,
         CancellationToken ct)
     {
         if (!options.DebugMode) return;
@@ -144,7 +145,10 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                 jar_height_px =
                     measurement is not null ? (double?)(measurement.JarBottomPx - measurement.JarTopPx) : null,
                 dough_height_px = measurement?.DoughHeightPx,
-                dough_floor_px = measurement?.DoughFloorPx
+                dough_floor_px = measurement?.DoughFloorPx,
+                surface_lost_after_peak_minutes = surfaceLostAfterPeakMinutes is { } lost
+                    ? (double?)Math.Round(lost)
+                    : null
             },
             JsonOpts);
         await PublishAsync(DiagnosticsTopic, payload, retain: true, ct);

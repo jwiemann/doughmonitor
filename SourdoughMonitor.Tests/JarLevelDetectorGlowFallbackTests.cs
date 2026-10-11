@@ -56,6 +56,25 @@ public class JarLevelDetectorGlowFallbackTests
     }
 
     [Fact]
+    public void StaleAnchor_SurfaceIsReacquiredAfterConfirmationFrames()
+    {
+        // Once the anchor is stale the continuity band can no longer reach the surface
+        // (collapsed dough falls arbitrarily far). The confirmed wide pass must find the
+        // real surface again: two agreeing candidates stay unpublished, the third is
+        // accepted with the "reacquire" method.
+        var detector = NewDetector();
+        Assert.NotNull(detector.Measure(Frame("glow-parity-1700.jpg"), Noon));
+        Assert.Null(detector.Measure(Frame("glow-blind-1730.jpg"), Noon.AddMinutes(40)));
+        Assert.Equal("no_surface", detector.LastOutcome);
+        Assert.Null(detector.Measure(Frame("glow-blind-1730.jpg"), Noon.AddMinutes(41)));
+        Assert.Equal("no_surface", detector.LastOutcome);
+        var reacquired = detector.Measure(Frame("glow-blind-1730.jpg"), Noon.AddMinutes(42));
+        Assert.True(reacquired is not null, $"surface not re-acquired ({detector.LastOutcome})");
+        Assert.InRange(reacquired!.DoughTopPx, 230, 250);
+        Assert.Equal("reacquire", detector.LastDiagnostics!.Method);
+    }
+
+    [Fact]
     public void ParityFrames_KeepTheirExistingLevels()
     {
         var evening = NewDetector().Measure(Frame("glow-parity-1700.jpg"), Noon);
@@ -75,9 +94,15 @@ public class JarLevelDetectorGlowFallbackTests
         var detector = NewDetector();
         foreach (var (known, minutes, _) in Sequence)
             Assert.NotNull(detector.Measure(Frame(known), Noon.AddMinutes(minutes)));
-        var measured = detector.Measure(Frame(file), Noon.AddMinutes(88));
-        if (measured is not null)
-            Assert.InRange(measured.DoughTopPx, 570, 586);
+        // The third frame also completes the re-acquire confirmation, so the empty jar's
+        // floor is the only edge the wide pass may ever publish here — never a mid-jar
+        // artifact posing as dough.
+        foreach (var minutes in new[] { 88, 89, 90 })
+        {
+            var measured = detector.Measure(Frame(file), Noon.AddMinutes(minutes));
+            if (measured is not null)
+                Assert.InRange(measured.DoughTopPx, 570, 586);
+        }
     }
 
     [Fact]

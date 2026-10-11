@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.51
+
+- Re-acquire the dough surface after a collapse or a long loss (#8): the continuity
+  fallback used to give up for good once the surface was farther from the last good row
+  than the rate-limited band allowed or the anchor was older than
+  `SurfaceContinuityMinutes` — after a collapse every following frame read "no surface".
+  The fallback now also runs a wide pass over the whole jar column (upward movement stays
+  rate-limited, downward jumps are unbounded; a stale anchor may search anywhere) and
+  accepts its surface only after `SurfaceReacquireFrames` agreeing frames (reported as
+  method "reacquire", so a static artifact cannot latch). The wide pass runs on both the
+  backlit and the ambient warm path; `SurfaceContinuityMinutes = 0` still disables the
+  fallback entirely.
+- Flag a peaked session whose surface stays lost (#9): `no_surface` for
+  `SurfaceLossAfterPeakMinutes` (default 120) consecutive minutes after a confirmed peak
+  logs one warning per outage and reports `surface_lost_after_peak_minutes` in the
+  debug-mode MQTT diagnostics payload. Dark nights, missing jars and fresh measurements
+  reset the streak — only an unbroken run of surface misses counts as a loss.
+- Fit the rise with an asymmetric Richards curve (#10):
+  `h(t) = L·(1 + ν·exp(-k(t-t0)))^(-1/ν)` with the shape ν fitted in [0.1, 5] (ν = 1 is
+  the previous symmetric logistic, ν → 0 the Gompertz curve). The symmetric model biased
+  the peak ETA by phase on asymmetric rises (measured −1.9 h on a truncated asymmetric
+  synthetic rise); the practical-peak ETA and its uncertainty window now follow the
+  measured asymmetry.
+
 ## 0.1.50
 
 - Publish a peak time only once it is actually determined, and never as a bare point:

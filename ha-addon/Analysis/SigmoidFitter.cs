@@ -5,18 +5,22 @@ namespace SourdoughMonitor.Analysis;
 
 using SourdoughMonitor.Models;
 
-/// <summary>Fits h(t) = L / (1 + exp(-k(t - t0))) to rise samples via multi-start Nelder-Mead on SSE.</summary>
+/// <summary>Fits the Richards (generalized logistic) curve
+/// h(t) = L * (1 + ν * exp(-k(t - t0)))^(-1/ν) — ν = 1 recovers the symmetric logistic
+/// h(t) = L / (1 + exp(-k(t - t0))), ν → 0 the Gompertz curve — via multi-start Nelder-Mead
+/// on SSE.</summary>
 public static class SigmoidFitter
 {
     /// <summary>SSE inflation (relative to the best fit) of the approximate 95% least-squares
-    /// confidence region for 3 parameters: SSE &lt;= SSEmin * (1 + F/(n-3)) with F ~ 3 * F(3, n-3)
-    /// ~ 3 * 3.0 (F(0.95; 3, n-3) is about 2.6-3.1 for n between 10 and 100).</summary>
-    private const double ConfidenceFactor = 3.0 * 3.0;
+    /// confidence region for 4 parameters: SSE &lt;= SSEmin * (1 + F/(n-4)) with F ~ 4 * F(4, n-4)
+    /// ~ 4 * 3.0 (F(0.95; 4, n-4) is about 2.5-3.0 for n ≥ 20).</summary>
+    private const double ConfidenceFactor = 4.0 * 3.0;
 
-    /// <summary>Fits the sigmoid from several independent seeds (heuristic, wide plateau, slow
-    /// growth and, when supplied, <paramref name="previousFit"/>). Taking the lowest-error
-    /// solution removes the path dependence a single warm start would have; the other
-    /// solutions statistically consistent with the data are returned as
+    /// <summary>Fits the Richards curve from several independent seeds (heuristic, wide
+    /// plateau, slow growth, asymmetric shapes and, when supplied,
+    /// <paramref name="previousFit"/>). Taking the lowest-error solution removes the path
+    /// dependence a single warm start would have; the other solutions statistically
+    /// consistent with the data are returned as
     /// <see cref="SigmoidFitResult.NearOptimal"/> so callers can express forecast uncertainty.</summary>
     public static SigmoidFitResult? TryFit(IReadOnlyList<Sample> samples, SigmoidFit? previousFit = null)
     {
@@ -31,12 +35,14 @@ public static class SigmoidFitter
         var tLast = t[^1];
         var seeds = new List<double[]>
         {
-            new[] { Math.Max(maxH * 1.5, 30), 1.0, Math.Max(tLast, 1.0) },
-            new[] { Math.Max(maxH * 3, 50), 1.0, Math.Max(tLast, 1.0) },
-            new[] { Math.Max(maxH * 1.5, 30), 0.3, Math.Max(tLast * 1.2, 2.0) }
+            new[] { Math.Max(maxH * 1.5, 30), 1.0, Math.Max(tLast, 1.0), 1.0 },
+            new[] { Math.Max(maxH * 3, 50), 1.0, Math.Max(tLast, 1.0), 1.0 },
+            new[] { Math.Max(maxH * 1.5, 30), 0.3, Math.Max(tLast * 1.2, 2.0), 1.0 },
+            new[] { Math.Max(maxH * 1.5, 30), 1.0, Math.Max(tLast, 1.0), 0.3 },
+            new[] { Math.Max(maxH * 1.5, 30), 1.0, Math.Max(tLast, 1.0), 3.0 }
         };
         if (previousFit is not null)
-            seeds.Add([previousFit.L, previousFit.K, previousFit.T0]);
+            seeds.Add([previousFit.L, previousFit.K, previousFit.T0, previousFit.Nu]);
         var solutions = new List<(SigmoidFit Fit, double Sse)>();
         foreach (var seed in seeds)
         {
@@ -45,13 +51,14 @@ public static class SigmoidFitter
                 var objective = ObjectiveFunction.Value(p => SumSquaredError(p, t, h, maxH));
                 var result = NelderMeadSimplex.Minimum(objective, Vector<double>.Build.DenseOfArray(seed), 1e-8, 5000);
                 var p = result.MinimizingPoint;
-                var (l, k, t0) = (p[0], p[1], p[2]);
+                var (l, k, t0, nu) = (p[0], p[1], p[2], p[3]);
                 // k below 0.05/h means a >60h time constant: the "fit" is a flat line and
                 // its peak ETA is unbounded (HoursAtFraction explodes) — no information.
-                if (l <= 0 || k < 0.05 || l > 500 || double.IsNaN(l) || double.IsNaN(k)) continue;
+                if (l <= 0 || k < 0.05 || l > 500 || nu < 0.1 || nu > 5
+                    || double.IsNaN(l) || double.IsNaN(k) || double.IsNaN(nu)) continue;
                 var sse = SumSquaredError(p, t, h, maxH);
                 var rmse = Math.Sqrt(sse / t.Length);
-                solutions.Add((new SigmoidFit(l, k, t0, rmse / l), sse));
+                solutions.Add((new SigmoidFit(l, k, t0, nu, rmse / l), sse));
             }
             catch (Exception)
             {
@@ -59,7 +66,7 @@ public static class SigmoidFitter
         }
         if (solutions.Count == 0) return null;
         var best = solutions.MinBy(s => s.Sse);
-        var limit = best.Sse * (1 + ConfidenceFactor / Math.Max(1, samples.Count - 3));
+        var limit = best.Sse * (1 + ConfidenceFactor / Math.Max(1, samples.Count - 4));
         var near = solutions.Where(s => s.Sse <= limit && !ReferenceEquals(s.Fit, best.Fit))
             .Select(s => s.Fit)
             .Prepend(best.Fit)
@@ -69,12 +76,12 @@ public static class SigmoidFitter
 
     private static double SumSquaredError(Vector<double> p, double[] t, double[] h, double maxH)
     {
-        var (l, k, t0) = (p[0], p[1], p[2]);
-        if (l <= 0 || k <= 0) return double.MaxValue;
+        var (l, k, t0, nu) = (p[0], p[1], p[2], p[3]);
+        if (l <= 0 || k <= 0 || nu < 0.1 || nu > 5) return double.MaxValue;
         double sse = 0;
         for (var i = 0; i < t.Length; i++)
         {
-            var predicted = l / (1 + Math.Exp(-k * (t[i] - t0)));
+            var predicted = l * Math.Pow(1 + nu * Math.Exp(-k * (t[i] - t0)), -1.0 / nu);
             var diff = predicted - h[i];
             sse += diff * diff;
         }

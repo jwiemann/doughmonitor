@@ -249,6 +249,41 @@ public class RiseAnalyzerTests
     }
 
     [Fact]
+    public void Analyze_ConfirmsCollapseAfterALongMeasurementGap()
+    {
+        // A collapse observed only after hours without measurements (the detector lost the
+        // surface and re-acquired it far lower) must confirm exactly like a gap-free one:
+        // the plausibility gate scales with elapsed time and never bridges the gap, and the
+        // collapse confirmation counts samples, not minutes.
+        var analyzer = new RiseAnalyzer(
+            new AnalysisOptions
+            {
+                SlopeWindowMinutes = 40,
+                ResetDropFraction = 0.25,
+                MinSamplesForFit = 1000,
+                MaxEtaRelativeStdError = 0.15,
+                PeakConfirmWindows = 3,
+                MaxSessionHours = 36,
+                MedianWindowSize = 1,
+                CollapseConfirmSamples = 3,
+                StateFilePath = null
+            });
+        var start = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        analyzer.Analyze(new LevelMeasurement(start, 100, 0, 200));
+        for (var i = 1; i <= 5; i++)
+            analyzer.Analyze(new LevelMeasurement(start.AddMinutes(30 * i), 50, 0, 200));
+        // Three hours of silence, then the collapsed level (DoughHeightPx = 90) appears on
+        // every subsequent sample, one minute apart.
+        var first = analyzer.Analyze(new LevelMeasurement(start.AddMinutes(330), 110, 0, 200));
+        var second = analyzer.Analyze(new LevelMeasurement(start.AddMinutes(331), 110, 0, 200));
+        var third = analyzer.Analyze(new LevelMeasurement(start.AddMinutes(332), 110, 0, 200));
+        Assert.Null(first);
+        Assert.Null(second);
+        Assert.NotNull(third);
+        Assert.True(third!.NewSession);
+    }
+
+    [Fact]
     public void Analyze_PersistsAndRestoresStateAcrossRestarts()
     {
         var stateFile = Path.Combine(Path.GetTempPath(), $"sourdough_state_test_{Guid.NewGuid():N}.json");

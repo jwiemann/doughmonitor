@@ -88,5 +88,12 @@ public sealed class AnalysisOptions
     /// instead of reverting on the next sample.</summary>
     public int CollapseConfirmSamples { get; init; } = 3;
 
+    /// <summary>Consecutive minutes of <c>no_surface</c> after a confirmed peak before the
+    /// loss is reported in the diagnostics: a peaked session whose surface stays invisible
+    /// for hours usually means the detector lost the surface (collapse?), not that the
+    /// dough vanished. Dark frames and other outcomes reset the streak — a dark night or a
+    /// missing jar is not a lost surface.</summary>
+    public int SurfaceLossAfterPeakMinutes { get; init; } = 120;
+
     public string? StateFilePath { get; init; } = "sourdough_state.json";
 }

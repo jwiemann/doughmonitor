@@ -185,7 +185,7 @@ public sealed class RiseAnalyzer
         var count = Math.Max(1, _options.PeakConfirmWindows);
         if (_slopes.Count < count + 1 || _samples[^1].RisePercent < _options.MinRisePercentForPeak)
             return false;
-        if ((now - _sessionStart).TotalHours < fit.T0 || _maximumSlope <= 0)
+        if ((now - _sessionStart).TotalHours < fit.InflectionHours || _maximumSlope <= 0)
             return false;
         // The maximum rate must prove a real rise happened, and the current rate must sit
         // measurably below it: while the rate is still at its maximum (accelerating or
