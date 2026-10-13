@@ -14,6 +14,21 @@ public sealed class VisionOptions
 
     public double MinJarWidthFraction { get; init; } = 0.04;
 
+    /// <summary>The wall tracker's model counts as confident from this score (sum of the two wall
+    /// lines' normalised edge strength). Clear LED-backlit scenes reach 1 to 2.4. False models on
+    /// the archive (the shelf edge beside a faint jar) stayed below 0.7, true models of
+    /// partially lit scenes start at about 0.8; flat daylight (0.15 to 0.4) is never trusted.</summary>
+    public double JarWallMinScore { get; init; } = 0.75;
+
+    /// <summary>A column edge within this fraction of the wall span (at least 14 px) counts as
+    /// agreeing with the wall model; beyond it the edge is polluted (outside) or the column is
+    /// elsewhere.</summary>
+    public double JarWallToleranceFraction { get; init; } = 0.06;
+
+    /// <summary>Frames in a row the detector's own columns may contradict the wall model
+    /// before the model is dropped.</summary>
+    public int JarWallDistrustFrames { get; init; } = 45;
+
     /// <summary>Frames whose 90th percentile ROI intensity is below this are rejected as
     /// "dark" (night without backlight): nothing in the frame is bright enough to be a lit
     /// jar, and detection would feed noise into the growth series. Percentile-based so a

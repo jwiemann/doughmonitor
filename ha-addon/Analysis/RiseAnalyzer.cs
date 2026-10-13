@@ -30,14 +30,12 @@ public sealed class RiseAnalyzer
     private bool _baselineOnDoughFloor;
     private DateTimeOffset _sessionStart;
     private bool _peaked;
-    private SigmoidFit? _lastFit;
     private double? _lastAcceptedHeightPx;
     private DateTimeOffset? _lastMeasurementTime;
     private int _implausibleStreak;
     private List<double>? _pendingCollapseHeights;
     private double _maximumSlope;
     private double? _peakReferenceRisePercent;
-    private readonly List<(DateTimeOffset Time, double EtaHours)> _etaHistory = [];
     private DateTimeOffset? _lastPublishedEta;
     private SessionSummary? _pendingSummary;
 
@@ -103,33 +101,27 @@ public sealed class RiseAnalyzer
         _lastMeasurementTime = m.Time;
         var risePercent = (smoothedHeightPx - baseline) / baseline * 100.0;
         _samples.Add(new Sample(m.Time, risePercent));
-        var slope = ComputeRate(m.Time);
-        if (slope is { } rate)
+        var rateSample = ComputeRate(m.Time);
+        double? slope = rateSample?.Slope;
+        if (rateSample is not null)
         {
-            _slopes.Add(new SlopeSample(m.Time, rate));
-            _maximumSlope = Math.Max(_maximumSlope, rate);
+            _slopes.Add(rateSample);
+            _maximumSlope = Math.Max(_maximumSlope, rateSample.Slope);
         }
-        SigmoidFitResult? fitResult = null;
-        if (!_peaked && _samples.Count >= _options.MinSamplesForFit)
-        {
-            fitResult = SigmoidFitter.TryFit(_samples, _lastFit);
-            if (fitResult is not null && fitResult.Best.RelativeStdError > _options.MaxEtaRelativeStdError)
-                fitResult = null;
-        }
-        var fit = fitResult?.Best;
-        if (fit is not null) _lastFit = fit;
-        if (fit is not null && !ForecastIsInformative(fit, m.Time)) fit = null;
-        if (slope is not null) UpdatePeakState(fit);
-        if (_peaked) fit = null;
+        RateForecast? forecast = null;
+        if (!_peaked && _samples.Count >= _options.MinSamplesForFit && ForecastIsInformative())
+            forecast = RateTrendForecaster.TryForecast(_slopes, risePercent, m.Time);
+        if (slope is not null) UpdatePeakState();
+        if (_peaked) forecast = null;
         DateTimeOffset? eta = null, etaLow = null, etaHigh = null;
-        if (fit is not null && fitResult is not null)
-            (eta, etaLow, etaHigh) = TrackEta(m.Time, fit, fitResult.NearOptimal);
+        if (forecast is not null)
+            (eta, etaLow, etaHigh) = PublishEta(m.Time, forecast);
         SaveState();
         return new RiseReading(
             m.Time,
             Math.Round(ClampRisePercent(risePercent), 1),
             slope is null ? null : Math.Round(slope.Value, 1),
-            fit is null ? null : Math.Round(ClampPredictedPeak(fit.L * _options.PeakFraction), 0),
+            forecast is null ? null : Math.Round(ClampPredictedPeak(forecast.PeakRisePercent), 0),
             eta,
             etaLow,
             etaHigh,
@@ -138,67 +130,38 @@ public sealed class RiseAnalyzer
             SessionStart: _sessionStart);
     }
 
-    /// <summary>Records the accepted fit's peak ETA and returns the point ETA (only while the
-    /// recent estimates agree within <see cref="AnalysisOptions.MaxEtaSpreadMinutes"/>) plus
-    /// the low/high range over the recent estimates and the near-optimal fits.</summary>
-    private (DateTimeOffset? Point, DateTimeOffset Low, DateTimeOffset High) TrackEta(
-        DateTimeOffset now, SigmoidFit fit, IReadOnlyList<SigmoidFit> nearOptimal)
+    /// <summary>Turns the rate-trend forecast into the published point ETA (only while the
+    /// windows agree within <see cref="AnalysisOptions.MaxEtaSpreadMinutes"/>) and the range.</summary>
+    private (DateTimeOffset? Point, DateTimeOffset Low, DateTimeOffset High) PublishEta(
+        DateTimeOffset now, RateForecast forecast)
     {
-        var cutoff = now.AddMinutes(-_options.EtaStabilityWindowMinutes);
-        _etaHistory.RemoveAll(e => e.Time < cutoff);
-        _etaHistory.Add((now, fit.HoursAtFraction(_options.PeakFraction)));
-        double windowMin = double.MaxValue, windowMax = double.MinValue;
-        foreach (var (_, hours) in _etaHistory)
-        {
-            windowMin = Math.Min(windowMin, hours);
-            windowMax = Math.Max(windowMax, hours);
-        }
-        double low = windowMin, high = windowMax;
-        foreach (var near in nearOptimal)
-        {
-            var hours = near.HoursAtFraction(_options.PeakFraction);
-            low = Math.Min(low, hours);
-            high = Math.Max(high, hours);
-        }
         DateTimeOffset? point = null;
-        if ((windowMax - windowMin) * 60.0 <= _options.MaxEtaSpreadMinutes)
+        if ((forecast.HoursHigh - forecast.HoursLow) * 60.0 <= _options.MaxEtaSpreadMinutes)
         {
-            point = _sessionStart.AddHours(_etaHistory[^1].EtaHours);
+            point = now.AddHours(forecast.HoursToPeak);
             _lastPublishedEta = point;
         }
-        return (point, _sessionStart.AddHours(low), _sessionStart.AddHours(high));
+        return (point, now.AddHours(forecast.HoursLow), now.AddHours(forecast.HoursHigh));
     }
 
     private double SlopeEvidence => _options.MinSlopeEvidenceSigmas * _options.MaxRateStdErrPercentPerHour;
 
-    /// <summary>How far below the session's maximum rate the current rate must sit for a
-    /// measured turn: the statistical margin (rate error), but at least two fifths of the
-    /// maximum rate — a brief dip during a steep spurt (observed: 17 %/h wobble under a
-    /// 23.5 %/h spurt, mid-acceleration) is not a turn.</summary>
-    private const double TurnFractionOfMaxSlope = 0.4;
+    /// <summary>Fraction of the session's maximum rate the current rate must have dropped by
+    /// before the rate trend is trusted as a turn (at least the statistical margin).</summary>
+    private const double TurnFractionOfMaxSlope = 0.15;
 
     private double TurnMargin(double evidence) =>
         Math.Max(evidence, TurnFractionOfMaxSlope * _maximumSlope);
 
-    private bool ForecastIsInformative(SigmoidFit fit, DateTimeOffset now)
+    /// <summary>A forecast needs proof that the rise has turned: the session's maximum rate must
+    /// show a real rise happened, and the current rate must sit measurably below it. While the
+    /// rate is still at its maximum (accelerating), the curve does not identify a peak.</summary>
+    private bool ForecastIsInformative()
     {
-        var count = Math.Max(1, _options.PeakConfirmWindows);
-        if (_slopes.Count < count + 1 || _samples[^1].RisePercent < _options.MinRisePercentForPeak)
+        if (_samples[^1].RisePercent < _options.MinRisePercentForPeak || _slopes.Count == 0)
             return false;
-        if ((now - _sessionStart).TotalHours < fit.InflectionHours || _maximumSlope <= 0)
-            return false;
-        // The maximum rate must prove a real rise happened, and the current rate must sit
-        // measurably below it: while the rate is still at its maximum (accelerating or
-        // plateauing at the top), the curve does not identify a peak.
         var evidence = SlopeEvidence;
-        if (_maximumSlope < evidence || _slopes[^1].Slope > _maximumSlope - TurnMargin(evidence)) return false;
-        // An accelerating segment does not identify a maximum. Require a sustained,
-        // positive but declining rise rate before exposing the extrapolation.
-        for (var i = _slopes.Count - count; i < _slopes.Count; i++)
-        {
-            if (_slopes[i].Slope <= 0 || _slopes[i].Slope > _slopes[i - 1].Slope) return false;
-        }
-        return true;
+        return _maximumSlope >= evidence && _slopes[^1].Slope <= _maximumSlope - TurnMargin(evidence);
     }
 
     private double Smooth(double rawHeightPx)
@@ -244,14 +207,15 @@ public sealed class RiseAnalyzer
         return recentMedian > 20 && risePercent < recentMedian * (1 - _options.ResetDropFraction);
     }
 
-    /// <summary>Rise rate (%/h): the least-squares slope of the shortest trailing span whose
+    /// <summary>Rise rate (%/h), centred on the middle of the span it was fitted over (a trailing
+    /// fit describes the rate about half a span ago, not now): the least-squares slope of the shortest trailing span whose
     /// standard error is within <see cref="AnalysisOptions.MaxRateStdErrPercentPerHour"/>, or
     /// null while no span within the look-back determines it. The error combines the sampling
     /// geometry (a longer or denser span pins the slope better) with the noise of a
     /// reading, taken as the larger of the configured floor and the scatter around the
     /// fit. A step or a handful of jittery frames therefore inflates the error and is
     /// withheld, rather than being clipped to a plausible-looking value.</summary>
-    private double? ComputeRate(DateTimeOffset now)
+    private SlopeSample? ComputeRate(DateTimeOffset now)
     {
         if (_baselineDoughHeightPx is not { } baseline || baseline <= 0) return null;
         var floorVariance = Math.Pow(_options.RateNoiseFloorPx / baseline * 100.0, 2);
@@ -276,12 +240,12 @@ public sealed class RiseAnalyzer
             var residualSumSquares = Math.Max(0, syy - sy * sy / n - slope * covariance);
             var noiseVariance = Math.Max(floorVariance, residualSumSquares / (n - 2));
             if (Math.Sqrt(noiseVariance / spreadX) <= _options.MaxRateStdErrPercentPerHour)
-                return slope;
+                return new SlopeSample(now, slope, now.AddHours(sx / n));
         }
         return null;
     }
 
-    private void UpdatePeakState(SigmoidFit? fit)
+    private void UpdatePeakState()
     {
         var count = Math.Max(1, _options.PeakConfirmWindows);
         if (_slopes.Count < count) return;
@@ -293,33 +257,13 @@ public sealed class RiseAnalyzer
         var maxRise = _samples.Max(s => s.RisePercent);
         if (maxRise < _options.MinRisePercentForPeak) return;
         // No peak without measured evidence that the dough really rose at some point.
-        var evidence = SlopeEvidence;
-        if (_maximumSlope < evidence) return;
-        var flatOrFalling = true;
+        if (_maximumSlope < SlopeEvidence) return;
+        // The rate itself is the criterion: a rise that has been flat or falling for the
+        // whole confirming span is the peak. The rise so far is the reference for resumed growth.
         for (var i = _slopes.Count - count; i < _slopes.Count; i++)
-            if (_slopes[i].Slope > _options.FlatSlopePercentPerHour) flatOrFalling = false;
-        // After resumed growth, a refit can still follow the old plateau. Require an
-        // observed new flat/falling period before confirming another peak. A fit that
-        // merely reaches the current rise is not a peak while the rate is still near its
-        // peak rate (accelerating): the rate must have measurably turned, and the turn
-        // must hold across the confirming windows — a wobble in a noisy rate is not a turn.
-        var practicalPeak = _peakReferenceRisePercent is null && fit is not null && _samples.Count >= count
-            && _slopes[^1].Slope <= _maximumSlope - TurnMargin(evidence);
-        if (practicalPeak)
-        {
-            for (var i = Math.Max(1, _slopes.Count - count); i < _slopes.Count; i++)
-                if (_slopes[i].Slope <= 0 || _slopes[i].Slope > _slopes[i - 1].Slope) practicalPeak = false;
-        }
-        if (practicalPeak && fit is not null)
-        {
-            for (var i = _samples.Count - count; i < _samples.Count; i++)
-                if (_samples[i].RisePercent < fit.L * _options.PeakFraction) practicalPeak = false;
-        }
-        if (!(flatOrFalling || practicalPeak)) return;
+            if (_slopes[i].Slope > _options.FlatSlopePercentPerHour) return;
         _peaked = true;
-        // A fitted peak uses the asymptote; a flat peak uses the observed maximum.
-        // Normal asymptotic creep must not revoke a confirmed practical peak.
-        _peakReferenceRisePercent = fit?.L ?? maxRise;
+        _peakReferenceRisePercent = maxRise;
     }
 
     /// <summary>Revokes a peak only after confirmed positive slopes and current growth
@@ -333,8 +277,6 @@ public sealed class RiseAnalyzer
         var jitterMarginPercent = _options.JitterTolerancePx / baseline * 100.0;
         if (_samples[^1].RisePercent <= reference + jitterMarginPercent) return;
         _peaked = false;
-        // Refit the retained session without the invalid plateau's optimizer seed.
-        _lastFit = null;
     }
 
     /// <summary>Re-expresses the running session against the dough floor, which lies
@@ -359,7 +301,6 @@ public sealed class RiseAnalyzer
         foreach (var height in window) _heightWindow.Enqueue(height);
         _lastAcceptedHeightPx -= offsetPx;
         _pendingCollapseHeights?.Clear();
-        _lastFit = null;
         _baselineDoughHeightPx = rebased;
         _baselineOnDoughFloor = true;
         return rebased;
@@ -374,14 +315,12 @@ public sealed class RiseAnalyzer
         _baselineOnDoughFloor = onDoughFloor && baselinePx is not null;
         _sessionStart = start;
         _peaked = false;
-        _lastFit = null;
         _peakReferenceRisePercent = null;
         _pendingCollapseHeights?.Clear();
         _maximumSlope = 0;
         _lastAcceptedHeightPx = null;
         _lastMeasurementTime = null;
         _implausibleStreak = 0;
-        _etaHistory.Clear();
         _lastPublishedEta = null;
     }
 

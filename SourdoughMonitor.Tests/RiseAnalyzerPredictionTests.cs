@@ -16,19 +16,24 @@ public class RiseAnalyzerPredictionTests
     private static LevelMeasurement AtRisePercent(DateTimeOffset time, double risePercent, double noisePx) =>
         new(time, 1000 - BaselinePx * (1 + risePercent / 100.0) - noisePx, 0, 1000);
 
-    /// <summary>A kept-starter bake: +6.2% logistic over about 2h, true 97% point at 1.5h + ln(32.3)/3.5h.</summary>
+    /// <summary>A kept-starter bake: the rate ramps to 6 %/h over 1.5 h, then falls linearly to
+    /// zero within 2 h, ending at +10.5%.</summary>
     private static IEnumerable<(DateTimeOffset Time, double Rise, double Noise)> LittleRise(int minutes)
     {
+        const double up = 1.5, down = 2.0, peakRate = 6;
         var random = new Random(7);
         for (var minute = 0; minute <= minutes; minute++)
         {
             var hours = minute / 60.0;
-            yield return (Start.AddMinutes(minute), 6.2 / (1 + Math.Exp(-3.5 * (hours - 1.5))),
-                random.NextDouble() * 2 - 1);
+            var tau = Math.Clamp(hours - up, 0, down);
+            var rise = hours <= up
+                ? peakRate * hours * hours / (2 * up)
+                : peakRate * up / 2 + peakRate * (tau - tau * tau / (2 * down));
+            yield return (Start.AddMinutes(minute), rise, random.NextDouble() * 2 - 1);
         }
     }
 
-    private static readonly double LittleRiseTruePeakHours = 1.5 + Math.Log(0.97 / 0.03) / 3.5;
+    private const double LittleRiseTruePeakHours = 3.5;
 
     private static List<RiseReading> Run(RiseAnalyzer analyzer, IEnumerable<(DateTimeOffset, double, double)> series)
     {
@@ -50,11 +55,9 @@ public class RiseAnalyzerPredictionTests
         Assert.NotEmpty(published);
         var truePeak = Start.AddHours(LittleRiseTruePeakHours);
         var last = published[^1];
-        Assert.InRange(Math.Abs((last.PredictedPeakTime!.Value - truePeak).TotalHours), 0, 1.0);
+        Assert.InRange(Math.Abs((last.PredictedPeakTime!.Value - truePeak).TotalHours), 0, 0.75);
         Assert.NotNull(last.PredictedPeakTimeLow);
         Assert.NotNull(last.PredictedPeakTimeHigh);
-        // Noise biases the fitted 97% point late by ~0.2h; the range must contain the true
-        // maximum to within that bias.
         Assert.True(last.PredictedPeakTimeLow - TimeSpan.FromMinutes(15) <= truePeak
             && truePeak <= last.PredictedPeakTimeHigh + TimeSpan.FromMinutes(15),
             $"range {last.PredictedPeakTimeLow:t}-{last.PredictedPeakTimeHigh:t} must contain {truePeak:t}");
@@ -134,7 +137,7 @@ public class RiseAnalyzerPredictionTests
         Assert.NotNull(summary);
         Assert.Equal(Start, summary!.SessionStart);
         Assert.Equal(feedTime.AddMinutes(2), summary.SessionEnd);
-        Assert.InRange(summary.MaxRisePercent, 5.5, 8);
+        Assert.InRange(summary.MaxRisePercent, 9.5, 12);
         Assert.InRange(Math.Abs(readings.Max(r => r.RisePercent) - summary.MaxRisePercent), 0, 0.06);
         Assert.InRange((summary.MaxRiseTime - Start).TotalHours, 1.5, 4.0);
         Assert.Equal(lastEta, summary.PredictedPeakTime);

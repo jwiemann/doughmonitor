@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.1.52
+
+- Jar detection from the glass walls and a consistent glass bottom, checked by replaying
+  the whole archive (17,449 frames, Oct 1-13): detected frames 8,446 to 10,289, "no jar"
+  1,310 to 52. A warm lit wall beside the jar was counted as dough and held the jar column at
+  x 352..1203 for days (Oct 8: 65 % of detected frames had an absurd column; Oct 9-10 detected
+  27 % / 4 %); black dough at night (LED jar) reported "no jar" for hours.
+  - `JarWallTracker` fits the two glass walls as angled lines (about 0.12 px per row, the
+    jar is about 60 px wider at the top than at the dough) from the persistent vertical edges
+    of the last 24 frames. Only clearly lit models (`JarWallMinScore`, 0.75) are trusted and
+    kept across weak daylight windows; flat daylight fits sit on reflections or the shelf.
+  - The detector clamps a column that reaches past the walls, replaces a stale held column
+    when this frame's own extent agrees with the walls, measures inside the walls when no
+    dough extent exists, and drops a model its own columns contradict for
+    `JarWallDistrustFrames` frames. The angle is applied at the row of the last surface.
+  - `JarBottomEstimator` reads the outer glass bottom the same way in day and night; the
+    detector reports the median of the last 45 frames for every method (night/continuity
+    frames used to report 671 against 702 by day, which shifts the dough floor offset).
+  - `replay --no-debug-images` (3x faster) and `tools/replay_metrics.py` for per-day
+    before/after tables.
+
+- Peak forecast from the rate trend instead of a sigmoid fit. Overnight data (2026-10-13,
+  796 gap-free frames) showed that the rise does not saturate asymptotically: the rate
+  ramps up for hours, peaks, and falls roughly linearly to zero within ~1.5 h. Richards,
+  Gompertz and logistic fits all put the plateau 3–15 h too late (ETA 13:13 for a peak at
+  02:35 UTC) and only published after the peak. `RateTrendForecaster` now extrapolates the
+  falling rate to zero (robust Theil–Sen line over 75/90/120 min of rate samples): the
+  zero crossing is the peak time, the area under the rate line the peak height. The
+  range is the spread over the windows; the point ETA is published only while that spread
+  is at most `MaxEtaSpreadMinutes` (now 60). Rate samples carry the centre of their fit span
+  (a trailing fit describes the rate half a span ago), removing a ~30 min lag. "Peaked"
+  is now purely rate-based (flat or falling for `PeakConfirmWindows`). Removed
+  `SigmoidFitter`, `PeakFraction`, `MaxEtaRelativeStdError`, `EtaStabilityWindowMinutes`.
+
 ## 0.1.51
 
 - Re-acquire the dough surface after a collapse or a long loss (#8): the continuity

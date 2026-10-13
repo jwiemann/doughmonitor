@@ -27,6 +27,7 @@ public static class ReplayRunner
         var stride = 1;
         double? intervalMinutes = null;
         var utcTimestamps = false;
+        var noDebugImages = false;
         for (var i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -55,6 +56,9 @@ public static class ReplayRunner
                 case "--timestamps-utc":
                     utcTimestamps = true;
                     break;
+                case "--no-debug-images":
+                    noDebugImages = true;
+                    break;
                 default:
                     if (args[i].StartsWith('-'))
                     {
@@ -81,7 +85,7 @@ public static class ReplayRunner
         var roi = ParseRoi(roiArg);
         var outPath = outDir ?? "replay-out";
         Directory.CreateDirectory(outPath);
-        var visionOptions = BuildReplayVisionOptions(options.Vision, outPath, roi);
+        var visionOptions = BuildReplayVisionOptions(options.Vision, outPath, roi, !noDebugImages);
         Directory.CreateDirectory(visionOptions.DebugOutputDirectory);
 
         var frames = CollectFrames(folder);
@@ -361,7 +365,7 @@ public static class ReplayRunner
     private static void PrintUsage(string error)
     {
         Console.Error.WriteLine($"Error: {error}");
-        Console.Error.WriteLine("Usage: dotnet run -- replay <folder> [--out dir] [--config appsettings.json] [--roi x,y,w,h] [--stride N | --interval-minutes N] [--timestamps-utc]");
+        Console.Error.WriteLine("Usage: dotnet run -- replay <folder> [--out dir] [--config appsettings.json] [--roi x,y,w,h] [--stride N | --interval-minutes N] [--timestamps-utc] [--no-debug-images]");
     }
 
     private static string? ResolveConfigPath(string? configArg)
@@ -415,7 +419,8 @@ public static class ReplayRunner
     private static VisionOptions BuildReplayVisionOptions(
         VisionOptions src,
         string outDir,
-        (int X, int Y, int W, int H)? roi)
+        (int X, int Y, int W, int H)? roi,
+        bool saveDebugImages)
     {
         var debugDir = Path.Combine(Path.GetFullPath(outDir), "debug");
         return new VisionOptions
@@ -426,6 +431,9 @@ public static class ReplayRunner
             RoiHeight = roi?.H ?? src.RoiHeight,
             MinJarWallFraction = src.MinJarWallFraction,
             MinJarWidthFraction = src.MinJarWidthFraction,
+            JarWallMinScore = src.JarWallMinScore,
+            JarWallToleranceFraction = src.JarWallToleranceFraction,
+            JarWallDistrustFrames = src.JarWallDistrustFrames,
             MinFrameIntensity = src.MinFrameIntensity,
             MinFrameContrast = src.MinFrameContrast,
             StrongBandContrast = src.StrongBandContrast,
@@ -438,7 +446,7 @@ public static class ReplayRunner
             MinDarkBandFraction = src.MinDarkBandFraction,
             FrontEdgeCoverageFraction = src.FrontEdgeCoverageFraction,
             DebugRetentionHours = src.DebugRetentionHours,
-            DebugSaveAnnotatedImages = true,
+            DebugSaveAnnotatedImages = saveDebugImages,
             DebugOutputDirectory = debugDir,
             // Mirror the live default: the overlay is opt-in. The surface curve is drawn
             // regardless, so the detection stays visible without painting the scene.
@@ -455,15 +463,12 @@ public static class ReplayRunner
         MaxRateStdErrPercentPerHour = src.MaxRateStdErrPercentPerHour,
         ResetDropFraction = src.ResetDropFraction,
         MinSamplesForFit = src.MinSamplesForFit,
-        MaxEtaRelativeStdError = src.MaxEtaRelativeStdError,
         PeakConfirmWindows = src.PeakConfirmWindows,
         MaxSessionHours = src.MaxSessionHours,
         MedianWindowSize = src.MedianWindowSize,
-        PeakFraction = src.PeakFraction,
         FlatSlopePercentPerHour = src.FlatSlopePercentPerHour,
         MinRisePercentForPeak = src.MinRisePercentForPeak,
         MinSlopeEvidenceSigmas = src.MinSlopeEvidenceSigmas,
-        EtaStabilityWindowMinutes = src.EtaStabilityWindowMinutes,
         MaxEtaSpreadMinutes = src.MaxEtaSpreadMinutes,
         MaxRisePxPerMinute = src.MaxRisePxPerMinute,
         JitterTolerancePx = src.JitterTolerancePx,

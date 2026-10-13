@@ -28,30 +28,37 @@ public class RiseAnalyzerForecastTests
         }
     }
 
+    /// <summary>The shape measured on 2026-10-13: the rate ramps up for 6 h to 20 %/h, then
+    /// falls linearly to zero within 1.7 h — the rise stops abruptly, not asymptotically.</summary>
+    private static LevelMeasurement RampThenFall(int step)
+    {
+        const double up = 6, down = 1.7, peakRate = 20;
+        var hours = step / 12.0;
+        var tau = Math.Clamp(hours - up, 0, down);
+        var rise = hours <= up
+            ? peakRate * hours * hours / (2 * up)
+            : peakRate * up / 2 + peakRate * (tau - tau * tau / (2 * down));
+        return new LevelMeasurement(Start.AddHours(hours), 300 - 100 * (1 + rise / 100.0) + 100, 0, 400);
+    }
+
     [Fact]
-    public void ObservedSlowdown_PredictsPracticalPeakThenConfirmsIt()
+    public void RateFallingToZero_PredictsPeakTimeAndHeightBeforeItArrivesThenConfirmsIt()
     {
         var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null });
-        RiseReading? atNineHours = null;
-        RiseReading? atTenHours = null;
+        RiseReading? beforePeak = null;
         RiseReading? last = null;
-        for (var step = 0; step <= 72; step++)
+        for (var step = 0; step <= 12 * 10; step++)
         {
-            last = analyzer.Analyze(KnownGrowth(step));
-            if (step == 54) atNineHours = last;
-            if (step == 60) atTenHours = last;
+            last = analyzer.Analyze(RampThenFall(step));
+            if (step == 12 * 7 + 8) beforePeak = last; // 7.67 h: 3 min of the 1.7 h fall are left
         }
-        // The rate has to fall measurably below its maximum before any ETA is shown.
-        Assert.NotNull(atNineHours?.PredictedPeakTime);
-        Assert.NotNull(atTenHours?.PredictedPeakTime);
-        var truePeak = Start.AddHours(6 + Math.Log(0.97 / 0.03) / 0.8);
-        var predictedHours = (atNineHours!.PredictedPeakTime!.Value - Start).TotalHours;
-        Assert.InRange(predictedHours, (truePeak - Start).TotalHours - 0.5, (truePeak - Start).TotalHours + 1);
-        Assert.InRange(atNineHours.PredictedPeakPercent!.Value, 92, 101);
-        Assert.False(atNineHours.Peaked);
-        Assert.InRange(Math.Abs((atTenHours!.PredictedPeakTime!.Value - atNineHours.PredictedPeakTime.Value).TotalHours), 0, 0.75);
-        Assert.True(atNineHours.PredictedPeakTimeLow <= atNineHours.PredictedPeakTime
-            && atNineHours.PredictedPeakTime <= atNineHours.PredictedPeakTimeHigh);
+        Assert.NotNull(beforePeak?.PredictedPeakTime);
+        var predictedHours = (beforePeak!.PredictedPeakTime!.Value - Start).TotalHours;
+        Assert.InRange(predictedHours, 7.7 - 0.25, 7.7 + 0.25);
+        Assert.InRange(beforePeak.PredictedPeakPercent!.Value, 74, 80);
+        Assert.False(beforePeak.Peaked);
+        Assert.True(beforePeak.PredictedPeakTimeLow <= beforePeak.PredictedPeakTime
+            && beforePeak.PredictedPeakTime <= beforePeak.PredictedPeakTimeHigh);
         Assert.True(last!.Peaked);
         Assert.Null(last.PredictedPeakTime);
         Assert.Null(last.PredictedPeakTimeLow);

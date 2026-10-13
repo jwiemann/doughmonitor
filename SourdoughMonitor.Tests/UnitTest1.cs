@@ -17,7 +17,6 @@ public class RiseAnalyzerTests
                 SlopeWindowMinutes = 40,
                 ResetDropFraction = 0.25,
                 MinSamplesForFit = 3,
-                MaxEtaRelativeStdError = 0.15,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
                 StateFilePath = null
@@ -42,7 +41,6 @@ public class RiseAnalyzerTests
                 SlopeWindowMinutes = 40,
                 ResetDropFraction = 0.25,
                 MinSamplesForFit = 3,
-                MaxEtaRelativeStdError = 0.15,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
                 StateFilePath = null
@@ -72,7 +70,6 @@ public class RiseAnalyzerTests
                 SlopeWindowMinutes = 40,
                 ResetDropFraction = 0.25,
                 MinSamplesForFit = 3,
-                MaxEtaRelativeStdError = 0.15,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
                 StateFilePath = null
@@ -96,7 +93,6 @@ public class RiseAnalyzerTests
                 SlopeWindowMinutes = 40,
                 ResetDropFraction = 0.25,
                 MinSamplesForFit = 3,
-                MaxEtaRelativeStdError = 0.15,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
                 StateFilePath = null
@@ -122,7 +118,6 @@ public class RiseAnalyzerTests
                 SlopeWindowMinutes = 40,
                 ResetDropFraction = 0.25,
                 MinSamplesForFit = 3,
-                MaxEtaRelativeStdError = 0.15,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
                 StateFilePath = null
@@ -153,7 +148,6 @@ public class RiseAnalyzerTests
                 SlopeWindowMinutes = 40,
                 ResetDropFraction = 0.25,
                 MinSamplesForFit = 3,
-                MaxEtaRelativeStdError = 0.15,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
                 MaxImplausibleJumpRejects = 2,
@@ -189,7 +183,6 @@ public class RiseAnalyzerTests
                 SlopeWindowMinutes = 40,
                 ResetDropFraction = 0.25,
                 MinSamplesForFit = 1000,
-                MaxEtaRelativeStdError = 0.15,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
                 MedianWindowSize = 1,
@@ -226,7 +219,6 @@ public class RiseAnalyzerTests
                 SlopeWindowMinutes = 40,
                 ResetDropFraction = 0.25,
                 MinSamplesForFit = 1000,
-                MaxEtaRelativeStdError = 0.15,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
                 MedianWindowSize = 1,
@@ -261,7 +253,6 @@ public class RiseAnalyzerTests
                 SlopeWindowMinutes = 40,
                 ResetDropFraction = 0.25,
                 MinSamplesForFit = 1000,
-                MaxEtaRelativeStdError = 0.15,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
                 MedianWindowSize = 1,
@@ -293,7 +284,6 @@ public class RiseAnalyzerTests
             {
                 ResetDropFraction = 0.25,
                 MinSamplesForFit = 3,
-                MaxEtaRelativeStdError = 0.15,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
                 StateFilePath = stateFile
@@ -431,7 +421,6 @@ public class RiseAnalyzerTests
         SlopeWindowMinutes = 40,
         ResetDropFraction = 0.25,
         MinSamplesForFit = 3,
-        MaxEtaRelativeStdError = 0.15,
         PeakConfirmWindows = 3,
         MaxSessionHours = 36,
         StateFilePath = null

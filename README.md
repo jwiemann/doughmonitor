@@ -260,7 +260,6 @@ boundary evidence still returns no measurement rather than inventing a surface.
       "MaxRateStdErrPercentPerHour": 2.0,
       "ResetDropFraction": 0.25,
       "MinSamplesForFit": 8,
-      "MaxEtaRelativeStdError": 0.15,
       "PeakConfirmWindows": 3,
       "MaxSessionHours": 36
     }

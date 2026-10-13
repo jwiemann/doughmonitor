@@ -159,11 +159,146 @@ public sealed class JarLevelDetector(VisionOptions options)
 
     private sealed record WallLine(int X, int Top, int Bottom);
 
+    private readonly JarWallTracker _walls = new(options.JarWallMinScore);
+    private int _frameIndex;
+    private int _wallDisagreementFrames;
+    private int _lastWallVoteFrame = -1;
+    private (double Left, double Right)? _lastWallEdges;
+
+    /// <summary>The jar walls the detector currently believes in (null until a clearly lit
+    /// window established them), for diagnostics and tests.</summary>
+    public JarWalls? Walls => _walls.Confident;
+
+    /// <summary>The wall edges at the row of the last surface, taking the walls' angle into
+    /// account.</summary>
+    private (double Left, double Right)? WallSpan(int frameHeight)
+    {
+        if (_walls.Confident is not { } walls) return null;
+        var row = _lastGoodSurface is { } good
+            ? Math.Clamp(good.Row, frameHeight * 0.35, frameHeight * 0.92)
+            : frameHeight * 0.7;
+        var left = walls.LeftAt(row);
+        var right = walls.RightAt(row);
+        if (right <= left) return null;
+        var tolerance = Math.Max(14, (right - left) * options.JarWallToleranceFraction);
+        if (_lastWallEdges is { } last
+            && (Math.Abs(last.Left - left) > tolerance || Math.Abs(last.Right - right) > tolerance))
+            _wallDisagreementFrames = 0;
+        _lastWallEdges = (left, right);
+        return (left, right);
+    }
+
+    /// <summary>Checks a column against the jar's glass walls (a clearly lit window's model,
+    /// kept until replaced) and repairs it:
+    /// <list type="bullet">
+    /// <item>an edge reaching past the wall line while the other edge agrees or reaches too is
+    /// polluted (typically a warm lit wall beside the jar counted as dough) and is clamped to
+    /// the wall line;</item>
+    /// <item>a held column that disagrees on both edges while this frame's own extent agrees
+    /// with the walls is stale (the jar was moved) and is replaced by the wall span.</item>
+    /// </list>
+    /// A column merely elsewhere with no agreeing observation is left to the normal move
+    /// validation. A model the detector's columns keep contradicting is dropped after
+    /// <see cref="VisionOptions.JarWallDistrustFrames"/> frames, so a wrong model cannot stay
+    /// locked.</summary>
+    private JarColumn? ConstrainToWalls(JarColumn? column, int frameHeight)
+    {
+        if (column is null || WallSpan(frameHeight) is not { } wall) return column;
+        var span = wall.Right - wall.Left;
+        var tolerance = Math.Max(14, span * options.JarWallToleranceFraction);
+        var observed = _freshColumnExtent ?? (column.Left, column.Right);
+        var observedAgrees = Math.Abs(observed.Left - wall.Left) <= tolerance
+            && Math.Abs(observed.Right - wall.Right) <= tolerance;
+        var leftExcess = wall.Left - column.Left;
+        var rightExcess = column.Right - wall.Right;
+        var leftAgrees = Math.Abs(leftExcess) <= tolerance;
+        var rightAgrees = Math.Abs(rightExcess) <= tolerance;
+        var clampLeft = leftExcess > tolerance && (rightAgrees || rightExcess > tolerance);
+        var clampRight = rightExcess > tolerance && (leftAgrees || leftExcess > tolerance);
+        if (clampLeft || clampRight)
+        {
+            _wallDisagreementFrames = 0;
+            return ReplaceColumn(column,
+                clampLeft ? (int)Math.Round(wall.Left) : column.Left,
+                clampRight ? (int)Math.Round(wall.Right) : column.Right);
+        }
+        if (!leftAgrees && !rightAgrees && observedAgrees)
+        {
+            _wallDisagreementFrames = 0;
+            return ReplaceColumn(column, (int)Math.Round(wall.Left), (int)Math.Round(wall.Right));
+        }
+        if (_lastWallVoteFrame != _frameIndex)
+        {
+            _lastWallVoteFrame = _frameIndex;
+            _wallDisagreementFrames = leftAgrees && rightAgrees ? 0 : _wallDisagreementFrames + 1;
+            if (_wallDisagreementFrames >= options.JarWallDistrustFrames)
+            {
+                _walls.Reset();
+                _wallDisagreementFrames = 0;
+            }
+        }
+        return column;
+    }
+
+    /// <summary>Adopts a repaired column: the polluted or stale extent must not stay in the held
+    /// history.</summary>
+    private JarColumn ReplaceColumn(JarColumn column, int left, int right)
+    {
+        _recentWarmColumns.Clear();
+        _recentWarmColumns.Enqueue((left, right));
+        _pendingWarmMove.Clear();
+        _freshColumnExtent = (left, right);
+        _proposedColumn = null;
+        return column with { Left = left, Right = right };
+    }
+
+    /// <summary>The jar column taken from the walls alone, for frames in which no dough extent can
+    /// be found (black dough at night, say). Null when there is no wall model.</summary>
+    private JarColumn? WallColumn(int frameWidth, int frameHeight)
+    {
+        if (WallSpan(frameHeight) is not { } wall) return null;
+        var marginY = Math.Max(2, frameHeight / 30);
+        return new JarColumn(
+            (int)Math.Round(Math.Max(2, wall.Left)), (int)Math.Round(Math.Min(frameWidth - 3, wall.Right)),
+            marginY, frameHeight - marginY, "walls");
+    }
+
     /// <summary>How the jar column was established: "walls" (Hough-detected vertical glass
     /// walls), "warm" (the dough's warm horizontal extent — those edges are the glass) or
     /// "fallback" (full-frame minus border margin; drawn orange so unverified bounds stay
     /// visually distinct from verified walls).</summary>
     private sealed record JarColumn(int Left, int Right, int Top, int Bottom, string Kind);
+
+    private const int BottomVoteWindow = 45;
+    private const int BottomMinVotes = 8;
+    private readonly Queue<int> _bottomVotes = new();
+    private Mat? _frameGray;
+
+    /// <summary>Replaces the measurement's glass bottom by the scene's consensus bottom (median of
+    /// <see cref="JarBottomEstimator"/> over the last frames), so every detection method and
+    /// every lighting reports the same base. The dough floor offsets and the fallback
+    /// continuity base then agree between day and night. A bottom more than 8 % of the frame
+    /// height away from the consensus is a different physical situation and is left alone.</summary>
+    private LevelMeasurement StabilizeBottom(LevelMeasurement measurement)
+    {
+        if (_frameGray is not { } gray || gray.Empty()) return measurement;
+        var (left, right) = _recentWarmColumns.Count > 0
+            ? (DensestCluster(_recentWarmColumns.Select(c => c.Left), 3),
+               DensestCluster(_recentWarmColumns.Select(c => c.Right), 3))
+            : WallSpan(gray.Height) is { } wall
+                ? ((int)wall.Left, (int)wall.Right)
+                : ((int)(gray.Width * 0.3), (int)(gray.Width * 0.7));
+        if (JarBottomEstimator.Estimate(gray, left, right) is { } vote)
+        {
+            _bottomVotes.Enqueue(vote);
+            while (_bottomVotes.Count > BottomVoteWindow) _bottomVotes.Dequeue();
+        }
+        if (_bottomVotes.Count < BottomMinVotes) return measurement;
+        var held = Median(_bottomVotes.Select(v => (float)v).ToArray());
+        return Math.Abs(held - measurement.JarBottomPx) > gray.Height * 0.08
+            ? measurement
+            : measurement with { JarBottomPx = held };
+    }
 
     /// <summary>Measures the dough level. <paramref name="sessionBaselineHeightPx"/>, when
     /// supplied, is the dough height (JarBottomPx - DoughTopPx) recorded at the start of the
@@ -176,6 +311,7 @@ public sealed class JarLevelDetector(VisionOptions options)
         // Scene changes raised while measuring clear the floor history first, so this frame's
         // floor joins the new scene's samples.
         if (measurement is null) return null;
+        measurement = StabilizeBottom(measurement);
         _lastGoodSurface = (measurement.DoughTopPx, measurement.JarBottomPx, now);
         // Re-acquire candidates must be consecutive: a real measurement ends the streak.
         _pendingReacquireRows.Clear();
@@ -190,6 +326,7 @@ public sealed class JarLevelDetector(VisionOptions options)
 
     private LevelMeasurement? MeasureFrame(byte[] jpegBytes, DateTimeOffset now, double? sessionBaselineHeightPx)
     {
+        _frameIndex++;
         // Color decode: the dough is warm-toned (tan) while glass/wall/background are
         // neutral — the saturation step is the most stable surface signal under ambient
         // light (a fresh-fed light dough shows almost no brightness step at all).
@@ -225,10 +362,12 @@ public sealed class JarLevelDetector(VisionOptions options)
             }
             else
             {
+                _walls.Reset();
                 _recentWarmColumns.Clear();
                 _recentWarmFronts.Clear();
                 _pendingWarmMove.Clear();
                 _floorOffsets.Clear();
+                _bottomVotes.Clear();
                 _persistedGeometry = null;
                 _referenceJarBottomPx = null;
                 _warmColumnSupport = 0;
@@ -243,6 +382,8 @@ public sealed class JarLevelDetector(VisionOptions options)
         using var rawGray = new Mat();
         Cv2.CvtColor(rawColor, rawGray, ColorConversionCodes.BGR2GRAY);
         using var img = ApplyConfiguredRoi(rawGray);
+        _frameGray?.Dispose();
+        _frameGray = img.Clone();
         using var imgColor = ApplyConfiguredRoi(rawColor);
         // Intensity statistics computed once per frame: Canny thresholds and the
         // dark-frame gate share them.
@@ -272,9 +413,11 @@ public sealed class JarLevelDetector(VisionOptions options)
                 SaveDebugImage(img, null, null, null, null, now, null);
             return null;
         }
+        _walls.Update(img);
         if (detectedGlow is { } glow)
         {
-            var litColumn = FindBacklitColumn(img, glow);
+            var litColumn = ConstrainToWalls(FindBacklitColumn(img, glow), img.Height)
+                ?? WallColumn(img.Width, img.Height);
             var litMeasurement = litColumn is not null
                 ? MeasureBacklit(img, glow, litColumn, now, frameStats, sessionBaselineHeightPx)
                   ?? (_proposedColumn is null
@@ -312,10 +455,10 @@ public sealed class JarLevelDetector(VisionOptions options)
         var genuineColumnEvidence = false;
         {
             using var edges = AutoCanny(blurred, medianIntensity, 1.0);
-            var warmColumn = FindJarColumnByWarmExtent(
+            var warmColumn = ConstrainToWalls(FindJarColumnByWarmExtent(
                 imgColor, img, img.Width, img.Height,
                 options.WarmColumnSaturationStep, options.WarmColumnMinFraction,
-                options.NeutralReferenceCeiling);
+                options.NeutralReferenceCeiling), img.Height);
             if (warmColumn is not null)
             {
                 var measurement = MeasureWithinColumn(edges, img, imgColor, warmColumn,
@@ -358,6 +501,20 @@ public sealed class JarLevelDetector(VisionOptions options)
                     return null;
                 }
             }
+            if (warmColumn is null && WallColumn(img.Width, img.Height) is { } wallColumn)
+            {
+                // No dough extent (black dough at night, a dim frame): the trusted glass walls
+                // still bound the jar, so the surface can be searched inside them.
+                var wallMeasurement = MeasureWithinColumn(edges, img, imgColor, wallColumn,
+                        now, frameStats, sessionBaselineHeightPx, visWarm, suppressWarmPath: true)
+                    ?? MeasureSurfaceContinuity(img, wallColumn, now, frameStats, sessionBaselineHeightPx);
+                if (wallMeasurement is not null)
+                {
+                    AcceptGeometryMeasurement(wallMeasurement, wallColumn, frameSize);
+                    LastOutcome = "detected";
+                    return wallMeasurement;
+                }
+            }
             if (warmColumn is null && _warmColumnSupport >= 3)
             {
                 _pendingWarmMove.Clear();
@@ -369,7 +526,8 @@ public sealed class JarLevelDetector(VisionOptions options)
         }
         if (backlitScene)
         {
-            var darkColumn = FindJarColumnByDarkExtent(img, img.Width, img.Height, options.DarkBandMaxIntensity);
+            var darkColumn = ConstrainToWalls(
+                FindJarColumnByDarkExtent(img, img.Width, img.Height, options.DarkBandMaxIntensity), img.Height);
             if (darkColumn is not null)
             {
                 using var edges = AutoCanny(blurred, medianIntensity, 1.0);
@@ -391,7 +549,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             foreach (var relaxation in new[] { 1.0, 0.6 })
             {
                 using var edges = AutoCanny(blurred, medianIntensity, relaxation);
-                var column = FindJarColumn(edges, img.Width, img.Height, relaxation);
+                var column = ConstrainToWalls(FindJarColumn(edges, img.Width, img.Height, relaxation), img.Height);
                 if (column is null) continue;
                 genuineColumnEvidence = true;
                 var measurement = MeasureWithinColumn(edges, img, imgColor, column,
@@ -458,6 +616,7 @@ public sealed class JarLevelDetector(VisionOptions options)
             _recentWarmFronts.Clear();
             _pendingWarmMove.Clear();
             _floorOffsets.Clear();
+            _bottomVotes.Clear();
             _recentWarmColumns.Enqueue((column.Left, column.Right));
             _warmColumnSupport = 0;
             _widthRejections = 0;
