@@ -1,0 +1,100 @@
+# Home Assistant view "Brot" (compact) for the Sourdough Monitor add-on 0.2.0.
+# Paste as one entry under `views:` in the dashboard's raw configuration editor.
+# Needs debug_enabled: true in the add-on options for the debug image and the spread tile.
+type: sections
+max_columns: 3
+title: Brot
+path: brot
+icon: mdi:baguette
+badges:
+  - type: entity
+    entity: binary_sensor.sourdough_monitor_data_stale
+    name: Veraltet
+    visibility:
+      - condition: state
+        entity: binary_sensor.sourdough_monitor_data_stale
+        state: "on"
+sections:
+  - type: grid
+    cards:
+      - type: heading
+        icon: mdi:baguette
+        heading_style: title
+        heading: Sauerteig
+      - type: picture-entity
+        entity: camera.sourdough_monitor_debug_image
+        camera_image: camera.sourdough_monitor_debug_image
+        camera_view: auto
+        fit_mode: contain
+        show_state: false
+        show_name: false
+      - type: tile
+        entity: sensor.sourdough_monitor_starter_rise
+        name: Aufgang
+      - type: tile
+        entity: sensor.sourdough_monitor_starter_rise_rate
+        name: Rate
+      - type: tile
+        entity: binary_sensor.sourdough_monitor_starter_peaked
+        name: Höhepunkt
+  - type: grid
+    cards:
+      - type: heading
+        icon: mdi:crystal-ball
+        heading_style: title
+        heading: Prognose
+      - type: tile
+        entity: sensor.sourdough_monitor_peak_eta
+        name: Höhepunkt (ETA)
+      - type: tile
+        entity: sensor.sourdough_monitor_predicted_peak_rise
+        name: Erwartete Höhe
+      - type: tile
+        entity: sensor.sourdough_monitor_peak_eta_earliest
+        name: Frühestens
+      - type: tile
+        entity: sensor.sourdough_monitor_peak_eta_latest
+        name: Spätestens
+      - type: history-graph
+        hours_to_show: 12
+        entities:
+          - entity: sensor.sourdough_monitor_starter_rise
+            name: Aufgang %
+  - type: grid
+    cards:
+      - type: heading
+        heading_style: title
+        heading: Details
+      - type: tile
+        entity: sensor.sourdough_monitor_session_started
+        name: Sitzung seit
+      - type: tile
+        entity: button.sourdough_monitor_reset_session
+        name: Neue Sitzung
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.sourdough_monitor_reset_session
+          confirmation:
+            text: Aktuelle Sitzung beenden und neu beginnen?
+      - type: tile
+        entity: sensor.timmerflotte_temp_hmd_sensor_temperatur_2
+        name:
+          type: entity
+      - type: tile
+        entity: sensor.timmerflotte_temp_hmd_sensor_luftfeuchtigkeit_2
+        name:
+          type: entity
+      - type: tile
+        entity: sensor.sourdough_monitor_llm_cost_today
+        name: KI-Kosten heute
+      - type: tile
+        entity: sensor.sourdough_monitor_llm_cost_total
+        name: KI-Kosten gesamt
+      - type: tile
+        entity: sensor.sourdough_monitor_llm_sample_spread
+        name: KI-Streuung
+      - type: tile
+        entity: sensor.sourdough_monitor_llm_model
+        name: Modell

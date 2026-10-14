@@ -166,6 +166,8 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                     measurement is not null ? (double?)(measurement.JarBottomPx - measurement.JarTopPx) : null,
                 dough_height_px = measurement?.DoughHeightPx,
                 dough_floor_px = measurement?.DoughFloorPx,
+                sample_spread_px = diagnostics?.SampleSpreadPx is { } spread ? (double?)Math.Round(spread, 1) : null,
+                samples_usable = diagnostics?.SampleCount,
                 surface_lost_after_peak_minutes = surfaceLostAfterPeakMinutes is { } lost
                     ? (double?)Math.Round(lost)
                     : null
@@ -398,6 +400,22 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             "Dough Height",
             "px",
             "{{ value_json.dough_height_px }}",
+            device,
+            ct,
+            entityCategory: "diagnostic");
+        await PublishSensorConfigAsync(
+            "llm_sample_spread",
+            "LLM Sample Spread",
+            "px",
+            "{{ value_json.sample_spread_px }}",
+            device,
+            ct,
+            entityCategory: "diagnostic");
+        await PublishSensorConfigAsync(
+            "llm_samples_usable",
+            "LLM Samples Usable",
+            null,
+            "{{ value_json.samples_usable }}",
             device,
             ct,
             entityCategory: "diagnostic");

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- New debug sensors `LLM Sample Spread` (px) and `LLM Samples Usable` (need `debug_enabled`).
+- The debug image no longer has the outcome and model text burned in; the outcome stays in the
+  log and the diagnostics JSONL.
+- Compact Home Assistant view in `dashboard/brot.yaml`.
+
 ## 0.2.0
 
 - Dough level from a vision LLM (OpenRouter) instead of the classic detector, which failed in

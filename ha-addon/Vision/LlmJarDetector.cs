@@ -291,7 +291,7 @@ public sealed class LlmJarDetector(
         {
             try
             {
-                SaveDebug(frame, crop, now, outcome, reason, interpretation, measurement, baselineHeightPx);
+                SaveDebug(frame, crop, now, interpretation, measurement, baselineHeightPx);
                 AppendJsonl(now, outcome, reason, samples, latencyMs, interpretation?.SurfaceRow, spread);
             }
             catch (IOException ex)
@@ -350,8 +350,6 @@ public sealed class LlmJarDetector(
         Mat frame,
         Rect crop,
         DateTimeOffset now,
-        string outcome,
-        string? reason,
         LlmInterpretation? interpretation,
         LevelMeasurement? measurement,
         double? baselineHeightPx)
@@ -381,8 +379,6 @@ public sealed class LlmJarDetector(
             Cv2.Line(canvas, new OpenCvSharp.Point(crop.X, y), new OpenCvSharp.Point(crop.Right, y),
                 new Scalar(255, 200, 0), 1);
         }
-        Cv2.PutText(canvas, $"{outcome}{(reason is null ? "" : " (" + reason + ")")}  {llm.Model}",
-            new OpenCvSharp.Point(8, 22), HersheyFonts.HersheySimplex, 0.6, new Scalar(255, 255, 255), 2);
         Cv2.ImEncode(".jpg", canvas, out var bytes, [new ImageEncodingParam(ImwriteFlags.JpegQuality, 80)]);
         LatestAnnotatedImageBytes = bytes;
         Directory.CreateDirectory(vision.DebugOutputDirectory);
