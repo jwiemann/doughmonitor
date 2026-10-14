@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2
+
+- Debug image reduced to three lines: the glass outline (green), the measured level (red) and the
+  session's starting level (blue). Level and start line are clipped to the inside of the glass;
+  the orange surface curve, the vertex dots and the crop frame are gone.
+
 ## 0.2.1
 
 - New debug sensors `LLM Sample Spread` (px) and `LLM Samples Usable` (need `debug_enabled`).

@@ -291,7 +291,7 @@ public sealed class LlmJarDetector(
         {
             try
             {
-                SaveDebug(frame, crop, now, interpretation, measurement, baselineHeightPx);
+                SaveDebug(frame, now, interpretation, measurement, baselineHeightPx);
                 AppendJsonl(now, outcome, reason, samples, latencyMs, interpretation?.SurfaceRow, spread);
             }
             catch (IOException ex)
@@ -346,38 +346,41 @@ public sealed class LlmJarDetector(
         };
     }
 
+    /// <summary>Debug image: the jar outline (green), the measured level (red) and the session's
+    /// starting level (blue). Level and start line are drawn only inside the glass.</summary>
     private void SaveDebug(
         Mat frame,
-        Rect crop,
         DateTimeOffset now,
         LlmInterpretation? interpretation,
         LevelMeasurement? measurement,
         double? baselineHeightPx)
     {
         using var canvas = frame.Clone();
-        Cv2.Rectangle(canvas, crop, new Scalar(160, 160, 160), 1);
-        static OpenCvSharp.Point P(PointD p) => new((int)Math.Round(p.X), (int)Math.Round(p.Y));
-        if (interpretation is { Outline.Count: > 1 })
+        if (interpretation is { Outline.Count: > 2 } outline)
         {
-            Cv2.Polylines(canvas, [interpretation.Outline.Select(P)], true, new Scalar(0, 220, 0), 2);
-            foreach (var p in interpretation.Outline) Cv2.Circle(canvas, P(p), 3, new Scalar(0, 220, 0), -1);
-        }
-        if (interpretation is { Surface.Count: > 1 })
-        {
-            Cv2.Polylines(canvas, [interpretation.Surface.Select(P)], false, new Scalar(0, 140, 255), 2);
-            foreach (var p in interpretation.Surface) Cv2.Circle(canvas, P(p), 4, new Scalar(0, 140, 255), -1);
-        }
-        if (interpretation is { Jar: { } box, SurfaceRow: { } level })
-        {
-            var y = (int)Math.Round(level);
-            Cv2.Line(canvas, new OpenCvSharp.Point((int)box.Left, y), new OpenCvSharp.Point((int)box.Right, y),
-                new Scalar(0, 0, 255), 2);
-        }
-        if (measurement is not null && baselineHeightPx is { } baseline)
-        {
-            var y = (int)Math.Round(measurement.JarBottomPx - baseline);
-            Cv2.Line(canvas, new OpenCvSharp.Point(crop.X, y), new OpenCvSharp.Point(crop.Right, y),
-                new Scalar(255, 200, 0), 1);
+            var polygon = outline.Outline
+                .Select(p => new OpenCvSharp.Point((int)Math.Round(p.X), (int)Math.Round(p.Y)))
+                .ToArray();
+            using var lines = new Mat(frame.Size(), MatType.CV_8UC3, Scalar.All(0));
+            using var lineMask = new Mat(frame.Size(), MatType.CV_8UC1, Scalar.All(0));
+            using var glassMask = new Mat(frame.Size(), MatType.CV_8UC1, Scalar.All(0));
+            Cv2.FillPoly(glassMask, [polygon], Scalar.All(255));
+
+            void Horizontal(double row, Scalar color, int thickness)
+            {
+                var y = (int)Math.Round(row);
+                Cv2.Line(lines, new OpenCvSharp.Point(0, y), new OpenCvSharp.Point(frame.Width, y), color, thickness);
+                Cv2.Line(lineMask, new OpenCvSharp.Point(0, y), new OpenCvSharp.Point(frame.Width, y),
+                    Scalar.All(255), thickness);
+            }
+
+            if (interpretation.SurfaceRow is { } level) Horizontal(level, new Scalar(0, 0, 255), 2);
+            if (measurement is not null && baselineHeightPx is { } baseline)
+                Horizontal(measurement.JarBottomPx - baseline, new Scalar(255, 200, 0), 2);
+            using var visible = new Mat();
+            Cv2.BitwiseAnd(lineMask, glassMask, visible);
+            lines.CopyTo(canvas, visible);
+            Cv2.Polylines(canvas, [polygon], true, new Scalar(0, 220, 0), 2);
         }
         Cv2.ImEncode(".jpg", canvas, out var bytes, [new ImageEncodingParam(ImwriteFlags.JpegQuality, 80)]);
         LatestAnnotatedImageBytes = bytes;
