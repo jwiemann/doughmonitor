@@ -7,7 +7,9 @@ using SourdoughMonitor.Config;
 
 namespace SourdoughMonitor.Vision;
 
-/// <summary>Locates a measurement column from a backlit glass foot or the dough's
+/// <summary>DISABLED: not wired into the add-on or the replay CLI since the vision-LLM detector
+/// (<see cref="LlmJarDetector"/>) took over. Kept for reference and its tests; do not add callers.
+/// Locates a measurement column from a backlit glass foot or the dough's
 /// ambient-light extent, then traces the lower-connected content boundary. The drawn
 /// curve and reported surface share one basis. Geometry is held across lighting
 /// changes and invalidated when the camera's coordinate system changes.</summary>
@@ -1643,36 +1645,8 @@ public sealed class JarLevelDetector(VisionOptions options)
         return edges;
     }
 
-    private static (double Median, double P10, double P90) ComputeIntensityStats(Mat gray)
-    {
-        var hist = new Mat();
-        Cv2.CalcHist([gray], [0], null, hist, 1, [256], [new Rangef(0, 256)]);
-        var total = gray.Rows * gray.Cols;
-        double Percentile(double fraction)
-        {
-            var target = total * fraction;
-            var running = 0.0;
-            for (var i = 0; i < 256; i++)
-            {
-                running += hist.At<float>(i);
-                if (running >= target) return i;
-            }
-            return 255;
-        }
-        var median = 255.0;
-        var half = total / 2.0;
-        var cumulative = 0.0;
-        for (var i = 0; i < 256; i++)
-        {
-            cumulative += hist.At<float>(i);
-            if (cumulative >= half)
-            {
-                median = i;
-                break;
-            }
-        }
-        return (median, Percentile(0.10), Percentile(0.90));
-    }
+    private static (double Median, double P10, double P90) ComputeIntensityStats(Mat gray) =>
+        FrameIntensity.Percentiles(gray);
 
     private Mat ApplyConfiguredRoi(Mat src)
     {

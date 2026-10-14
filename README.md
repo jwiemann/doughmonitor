@@ -7,7 +7,7 @@ Monitor sourdough starter rise from Frigate camera snapshots, publish readings t
 ## How it works
 
 1. Periodically fetches a camera snapshot from [Frigate](https://frigate.video/) (or any URL that returns a JPEG).
-2. Uses computer vision to detect the jar and dough surface inside a configurable region of interest.
+2. Sends the (dark-gated, cropped, downscaled) frame to a vision LLM on [OpenRouter](https://openrouter.ai/), which marks the whole jar outline and the front dough surface as points; the level is computed from those points. See [Vision LLM detector](#vision-llm-detector).
 3. Tracks growth over time, computes rise %, rise rate, and predicts peak ETA using sigmoid curve fitting.
 4. Publishes sensors to Home Assistant via MQTT discovery (auto-creates sensors, binary sensor, and a reset button).
 5. Shows a live ASCII preview in the console.
@@ -22,6 +22,10 @@ Monitor sourdough starter rise from Frigate camera snapshots, publish readings t
 | `sourdough_monitor_peak_eta` | `sensor` (timestamp) | Estimated time of peak |
 | `sourdough_monitor_peaked` | `binary_sensor` | ON when rise has peaked |
 | `sourdough_monitor_reset` | `button` | Button to reset the current session |
+| `sourdough_monitor_llm_cost_today` | `sensor` (USD, diagnostic) | Billed LLM cost today (UTC day) |
+| `sourdough_monitor_llm_cost_total` | `sensor` (USD, diagnostic) | Billed LLM cost in total (kept in `/data/llm_usage.json`) |
+| `sourdough_monitor_llm_calls_today` / `_total` | `sensor` (diagnostic) | Billed LLM calls today / in total |
+| `sourdough_monitor_llm_model` | `sensor` (diagnostic) | Model in use (change it in the add-on option `llm_model`) |
 
 ## Installation (HA add-on)
 
@@ -39,7 +43,7 @@ Monitor sourdough starter rise from Frigate camera snapshots, publish readings t
 | `frigate_base_url` | Your Home Assistant/Frigate base URL |
 | `frigate_camera` | Camera entity name in Frigate |
 | `frigate_access_token` | Long-lived access token (create in HA profile) |
-| `frigate_sample_interval_minutes` | Interval between snapshots (0.25–60 min, default 1) |
+| `frigate_sample_interval_minutes` | Interval between snapshots (0.25–60 min, default 5) |
 | `mqtt_host` | MQTT broker hostname |
 | `mqtt_port` | MQTT broker port |
 | `mqtt_username` | MQTT username |
@@ -216,7 +220,7 @@ and snapshots at once). Remedies, in order of effect:
 3. Raise `frigate_sample_interval_minutes` (e.g. 5) — fewer requests per hour.
 4. Keep the retry count low (`Frigate:SnapshotRetryCount`, default 1).
 
-## Dark-frame gate
+## Dark-frame gate (classic detector only; the LLM detector gates on P90 alone, see below)
 
 Without a recognized light source, frames whose P90 intensity is below
 `Vision:MinFrameIntensity` (25) or P90−P10 spread below `Vision:MinFrameContrast` (30)
@@ -224,6 +228,48 @@ are rejected. A compact LED-lit jar can occupy less than ten percent of a dark f
 its source and separate glass foot are checked before this global gate. Detection
 then follows the lower-connected dough body, not the hotspot's fade. Insufficient
 boundary evidence still returns no measurement rather than inventing a surface.
+
+## Vision LLM detector
+
+Detection runs through a vision model on OpenRouter; the classic computer-vision detector
+(`JarLevelDetector`) is disabled but still in the repository.
+
+| Option | Meaning |
+|---|---|
+| `llm_api_key` | OpenRouter API key (required; without it every cycle reports `llm_error`) |
+| `llm_model` | Model slug that accepts images (default `google/gemini-3.8-flash`) |
+| `llm_max_calls_per_day` | Hard cap on API calls per UTC day (default 4500 = 3 samples per minute) |
+| `llm_samples_per_cycle` | Independent draws per frame; the median level is used (default 3, 1 = off) |
+
+Per cycle: the frame is gated (`Vision:MinFrameIntensity`, P90 of the gray levels; contrast is not
+gated), cropped to `Vision:RoiX/RoiY/RoiWidth/RoiHeight` when set, scaled to
+`Llm:ImageMaxEdge` (640 px) and sent once. The model returns 0–1000-grid points for the jar
+outline and the front dough surface. The level is the mean of the surface curve over the central
+60 % of the jar width; the jar top and bottom are the median of the last 15 outlines. Outcomes:
+`detected`, `dark_frame`, `no_jar`, `no_surface`, `llm_rejected` (low confidence, implausible
+shape or surface), `llm_error`, `llm_budget`.
+
+Each cycle draws the frame `llm_samples_per_cycle` times (the first at temperature 0, the others at
+0.4 so they can differ) and uses the median level and median jar outline. The spread (max − min of
+the usable samples' level, px) is logged every cycle together with running mean, max and the number
+of cycles above 10 px, and written to `diagnostics-*.jsonl` (`sample_spread_px`). A consistently
+small spread means one sample would give the same level and `llm_samples_per_cycle` can drop to 1. A
+cycle needs a majority of usable samples; otherwise the most common rejection is reported.
+
+Cost (measured 2026-10-14, check OpenRouter prices): about $0.0024 per call with
+`google/gemini-3.8-flash` (1,700 prompt tokens), so about $0.007 per 3-sample cycle: roughly
+$10 per day at one cycle per minute, $2 per day at the default 5-minute interval. Setting the
+ROI to the jar reduces tokens further.
+
+Replay uses the same detector and needs `Monitor__Llm__ApiKey` in the environment:
+
+```
+dotnet run -- replay <folder> --model google/gemini-3.8-flash --samples 3 --max-calls 200 --llm-cache llm-cache
+```
+
+Answers are cached on disk by (model, prompt, image), so repeating a replay is free;
+`--max-calls` caps real calls per run (default 200). `python tools/llm_benchmark.py MODEL...`
+scores models against the labelled frames in `tools/llm_bench/labels.csv`.
 
 ## Configuration (appsettings.json)
 
@@ -234,7 +280,7 @@ boundary evidence still returns no measurement rather than inventing a surface.
       "BaseUrl": "http://homeassistant.local:8123",
       "Camera": "battery_cam",
       "AccessToken": "",
-      "SampleIntervalMinutes": 1
+      "SampleIntervalMinutes": 5
     },
     "Mqtt": {
       "Host": "core-mosquitto",

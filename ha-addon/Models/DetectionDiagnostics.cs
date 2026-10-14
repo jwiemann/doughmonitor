@@ -22,4 +22,11 @@ public sealed record DetectionDiagnostics(string Method, double BandContrast, in
     public int? JarRightPx { get; init; }
 
     public string? JarColumnKind { get; init; }
+
+    /// <summary>LLM detector: samples that produced a usable level this cycle.</summary>
+    public int? SampleCount { get; init; }
+
+    /// <summary>LLM detector: max - min of the usable samples' surface rows (px). Near 0 means the
+    /// model answers consistently and extra samples add cost without value.</summary>
+    public double? SampleSpreadPx { get; init; }
 }

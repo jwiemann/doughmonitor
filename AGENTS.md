@@ -26,7 +26,7 @@
 
 ## Important areas
 
-- Vision detection logic lives in [Vision/JarLevelDetector.cs](Vision/JarLevelDetector.cs).
+- Detection is the vision-LLM detector in [ha-addon/Vision/LlmJarDetector.cs](ha-addon/Vision/LlmJarDetector.cs) (prompt, parsing and validation in `LlmAnnotation.cs`, OpenRouter client in `ha-addon/Services`). The classic `JarLevelDetector` is disabled (not wired), kept for reference; the notes below describe it.
 - Growth analysis lives in [Analysis](Analysis).
 - Tests live in [SourdoughMonitor.Tests](SourdoughMonitor.Tests).
 

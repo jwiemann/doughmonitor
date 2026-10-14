@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.2.0
+
+- Dough level from a vision LLM (OpenRouter) instead of the classic detector, which failed in
+  low light by confusing the front and back of the jar. `LlmJarDetector` gates dark frames
+  (P90 below `Vision:MinFrameIntensity`; contrast is no longer gated), crops to the ROI,
+  downscales to 640 px and asks the model for the whole jar outline and the front dough surface as
+  points on a 0-1000 grid. The level is the mean of the surface curve over the central 60 % of
+  the jar width; jar top and bottom are the median of the last 15 outlines. A camera move is
+  confirmed when the newest 5 outlines shift against the older median on two edges (or the bottom
+  by 16 %), and resets the rise session. `JarLevelDetector` is disabled (not wired), not deleted.
+  - The height basis is the glass bottom (no dough floor), so a rise session started with the
+    classic detector on the dough-floor basis stays "unavailable" until it is reset.
+  - New options `llm_api_key`, `llm_model` (default `google/gemini-3.8-flash`),
+    `llm_max_calls_per_day` (hard cap, 4500), `llm_samples_per_cycle` (3) and `Monitor:Llm:*`
+    (image size, JPEG quality, confidence floor, geometry window, sample temperature).
+  - Home Assistant sensors for the LLM: cost today (UTC day) and in total, calls today and in
+    total, and the model in use. Totals persist in `/data/llm_usage.json`; cached replay answers
+    are never counted. The model can be switched in the add-on options (`llm_model`).
+  - Median of 3 samples per cycle: the single-draw level wandered by about 40 px between frames
+    on the overnight LED sequence. The sample spread is logged per cycle with running statistics
+    and written to the diagnostics JSONL so the extra cost can be dropped when it stops mattering.
+  - `replay` uses the LLM detector with an on-disk response cache (`--llm-cache`), `--model`,
+    `--samples` and `--max-calls`; `tools/llm_benchmark.py` scores models on the labelled frames
+    in `tools/llm_bench`.
+  - Benchmark (10 labelled low-light/daylight frames, one sample): `google/gemini-3.8-flash`
+    median surface error 4-7 px, jar bottom 6 px, no false positive, about $0.0024 per call;
+    `google/gemini-3.1-flash-lite` 12 px at $0.0007; `google/gemini-3.5-flash-lite` similar at
+    $0.0012; `google/gemini-2.5-flash-lite` 45 px with 5 of 10 unusable;
+    `qwen/qwen3-vl-30b-a3b-instruct` poor jar bottom (median 58 px).
+  - Overnight 2026-10-13 00:00-02:50 UTC with 3 samples: 18 of 18 cycles measured, level falls
+    smoothly 511 to 463 px, sample spread mean 4.8 px, max 16.2 px, 1 of 18 cycles above 10 px.
+
 ## 0.1.52
 
 - Jar detection from the glass walls and a consistent glass bottom, checked by replaying

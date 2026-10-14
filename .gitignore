@@ -34,3 +34,7 @@ tmp-*
 
 # Private raw corpus and generated calibration reports
 /corpus/
+
+# LLM benchmark helper (tracked) and response cache
+!tools/llm_benchmark.py
+llm-cache/

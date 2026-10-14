@@ -11,4 +11,6 @@ public sealed class MonitorOptions
     public AnalysisOptions Analysis { get; init; } = new();
 
     public VisionOptions Vision { get; init; } = new();
+
+    public LlmOptions Llm { get; init; } = new();
 }

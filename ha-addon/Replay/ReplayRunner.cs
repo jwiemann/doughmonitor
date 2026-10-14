@@ -3,9 +3,11 @@ using System.Text;
 using System.Text.Json;
 
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 
 using SourdoughMonitor.Analysis;
 using SourdoughMonitor.Config;
+using SourdoughMonitor.Services;
 using SourdoughMonitor.Vision;
 
 namespace SourdoughMonitor.Replay;
@@ -23,7 +25,8 @@ public static class ReplayRunner
 
     public static async Task<int> RunAsync(string[] args)
     {
-        string? folder = null, outDir = null, configArg = null, roiArg = null;
+        string? folder = null, outDir = null, configArg = null, roiArg = null, llmCacheArg = null, modelArg = null;
+        int? maxCalls = null, samples = null;
         var stride = 1;
         double? intervalMinutes = null;
         var utcTimestamps = false;
@@ -58,6 +61,18 @@ public static class ReplayRunner
                     break;
                 case "--no-debug-images":
                     noDebugImages = true;
+                    break;
+                case "--llm-cache" when i + 1 < args.Length:
+                    llmCacheArg = args[++i];
+                    break;
+                case "--model" when i + 1 < args.Length:
+                    modelArg = args[++i];
+                    break;
+                case "--max-calls" when i + 1 < args.Length:
+                    maxCalls = int.Parse(args[++i], CultureInfo.InvariantCulture);
+                    break;
+                case "--samples" when i + 1 < args.Length:
+                    samples = int.Parse(args[++i], CultureInfo.InvariantCulture);
                     break;
                 default:
                     if (args[i].StartsWith('-'))
@@ -130,7 +145,13 @@ public static class ReplayRunner
         Console.WriteLine($"Replay: {frames.Count} frames from {frames[0].Time:yyyy-MM-dd HH:mm} to {frames[^1].Time:yyyy-MM-dd HH:mm}");
         Console.WriteLine($"Output: {Path.GetFullPath(outPath)}");
 
-        var detector = new JarLevelDetector(visionOptions);
+        var llmOptions = BuildReplayLlmOptions(options.Llm, modelArg, maxCalls, samples);
+        // Every answer is cached on disk by (model, prompt, image): reruns cost nothing.
+        var llmClient = new CachingLlmClient(
+            new OpenRouterClient(new HttpClient(), llmOptions),
+            Path.GetFullPath(llmCacheArg ?? "llm-cache"));
+        var detector = new LlmJarDetector(
+            visionOptions, llmOptions, llmClient, NullLogger<LlmJarDetector>.Instance);
         var riseAnalyzer = new RiseAnalyzer(BuildReplayAnalysisOptions(options.Analysis));
         var warnings = new List<string>();
         // Mirror the live Worker: a camera move mid-replay invalidates the rise baseline.
@@ -160,7 +181,8 @@ public static class ReplayRunner
             }
             // Session baseline mirrors the live Worker: the analyzer's baseline as it stood
             // before this frame, so debug images draw the session-start line like the addon.
-            var measurement = detector.Measure(bytes, frame.Time, riseAnalyzer.BaselineDoughHeightPx);
+            var measurement = await detector.MeasureAsync(
+                bytes, frame.Time, riseAnalyzer.BaselineDoughHeightPx, CancellationToken.None);
             var diagnostics = detector.LastDiagnostics;
             var debugImage = detector.LastDebugImagePath is { } path
                 ? Path.GetRelativePath(Path.GetFullPath(outPath), path)
@@ -214,7 +236,7 @@ public static class ReplayRunner
             rows.Count,
             rows.Count(r => r.Outcome == "detected"),
             rows.Count(r => r.Outcome == "dark_frame"),
-            rows.Count(r => r.Outcome is "no_surface" or "no_jar"),
+            rows.Count(r => r.Outcome is "no_surface" or "no_jar" or "llm_rejected" or "llm_error" or "llm_budget"),
             rows.Count(r => r.Outcome == "decode_failed"),
             rows.Count(r => r.Reading == "unavailable"),
             mtimeFallback,
@@ -231,6 +253,10 @@ public static class ReplayRunner
         ReplayReportWriter.WriteHtml(Path.Combine(outPath, "report.html"), summary, rows);
 
         PrintSummary(summary);
+        Console.WriteLine($"LLM {llmOptions.Model}: ${detector.TotalCostUsd:F4} billed this run (cached answers are free)");
+        Console.WriteLine(
+            $"Sample spread over {detector.Spread.Cycles} cycles: mean {detector.Spread.Mean:F1} px, "
+            + $"max {detector.Spread.Max:F1} px, {detector.Spread.Noisy} cycles over {llmOptions.SpreadWarnPx:F0} px");
         return 0;
     }
 
@@ -365,7 +391,7 @@ public static class ReplayRunner
     private static void PrintUsage(string error)
     {
         Console.Error.WriteLine($"Error: {error}");
-        Console.Error.WriteLine("Usage: dotnet run -- replay <folder> [--out dir] [--config appsettings.json] [--roi x,y,w,h] [--stride N | --interval-minutes N] [--timestamps-utc] [--no-debug-images]");
+        Console.Error.WriteLine("Usage: dotnet run -- replay <folder> [--out dir] [--config appsettings.json] [--roi x,y,w,h] [--stride N | --interval-minutes N] [--timestamps-utc] [--no-debug-images] [--model slug] [--max-calls N] [--llm-cache dir]");
     }
 
     private static string? ResolveConfigPath(string? configArg)
@@ -476,6 +502,28 @@ public static class ReplayRunner
         CollapseConfirmSamples = src.CollapseConfirmSamples,
         // Replay must never touch the live addon session state file.
         StateFilePath = null
+    };
+
+    private static LlmOptions BuildReplayLlmOptions(LlmOptions src, string? model, int? maxCalls, int? samples) => new()
+    {
+        ApiKey = src.ApiKey,
+        Model = model ?? src.Model,
+        BaseUrl = src.BaseUrl,
+        ImageMaxEdge = src.ImageMaxEdge,
+        SamplesPerCycle = samples ?? src.SamplesPerCycle,
+        SampleTemperature = src.SampleTemperature,
+        SpreadWarnPx = src.SpreadWarnPx,
+        MaxTokens = src.MaxTokens,
+        ReasoningEffort = src.ReasoningEffort,
+        JpegQuality = src.JpegQuality,
+        // A replay is a batch job: cap the real (uncached) calls per run, not per day.
+        MaxCallsPerDay = maxCalls ?? 200,
+        RequestTimeoutSeconds = src.RequestTimeoutSeconds,
+        MaxRetries = src.MaxRetries,
+        MinConfidence = src.MinConfidence,
+        GeometryWindow = src.GeometryWindow,
+        GeometryJumpFraction = src.GeometryJumpFraction,
+        SceneChangeFrames = src.SceneChangeFrames
     };
 
     private sealed record Frame(string Path, DateTimeOffset Time, bool FromFilename);

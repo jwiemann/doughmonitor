@@ -8,7 +8,7 @@ namespace SourdoughMonitor;
 
 public sealed class Worker(
     FrigateSnapshotClient frigate,
-    JarLevelDetector detector,
+    LlmJarDetector detector,
     RiseAnalyzer analyzer,
     HaMqttPublisher mqtt,
     MonitorOptions options,
@@ -76,6 +76,16 @@ public sealed class Worker(
             logger.LogWarning("No snapshot from Frigate");
             await MarkSilentAsync(ct);
             return;
+        }
+
+        try
+        {
+            await mqtt.PublishLlmUsageAsync(
+                detector.Usage.Snapshot(DateOnly.FromDateTime(DateTime.UtcNow)), options.Llm.Model, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not publish LLM usage");
         }
 
         var lossMinutes = _surfaceLoss.Observe(
@@ -185,11 +195,7 @@ public sealed class Worker(
                 }
                 break;
             }
-            measurement = detector.Measure(jpeg, DateTimeOffset.Now, sessionBaselineHeightPx);
-            if (measurement is not null && options.Vision.RoiY is not null)
-            {
-                measurement = JarLevelDetector.AdjustMeasurementForRoi(measurement, options.Vision.RoiY.Value);
-            }
+            measurement = await detector.MeasureAsync(jpeg, DateTimeOffset.Now, sessionBaselineHeightPx, ct);
             if (measurement is null)
             {
                 logger.LogInformation("Snapshot fetched but dough not detected; waiting for next cycle");

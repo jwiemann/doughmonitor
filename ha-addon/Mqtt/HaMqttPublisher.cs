@@ -27,6 +27,8 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
 
     private string SessionSummaryTopic => $"{options.DeviceId}/session_summary";
 
+    private string LlmUsageTopic => $"{options.DeviceId}/llm_usage";
+
     public event Func<Task>? ResetRequested;
 
     public async Task ConnectAsync(CancellationToken ct)
@@ -115,6 +117,24 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
 
     public Task PublishUnavailableMeasurementAsync(CancellationToken ct) =>
         PublishAsync($"{options.DeviceId}/measurement_status", "no_reading", retain: false, ct);
+
+    /// <summary>Publishes billed LLM calls and cost (today in UTC, and total) and the model in use.</summary>
+    public Task PublishLlmUsageAsync(
+        SourdoughMonitor.Services.LlmUsageSnapshot usage, string model, CancellationToken ct) =>
+        PublishAsync(
+            LlmUsageTopic,
+            JsonSerializer.Serialize(
+                new
+                {
+                    cost_today_usd = Math.Round(usage.CostTodayUsd, 4),
+                    cost_total_usd = Math.Round(usage.CostTotalUsd, 4),
+                    calls_today = usage.CallsToday,
+                    calls_total = usage.CallsTotal,
+                    model
+                },
+                JsonOpts),
+            retain: true,
+            ct);
 
     public async Task PublishDebugImageAsync(byte[] jpegBytes, CancellationToken ct)
     {
@@ -294,6 +314,22 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             entityCategory: "diagnostic",
             stateTopicOverride: SessionSummaryTopic,
             jsonAttributesTopic: SessionSummaryTopic);
+        await PublishSensorConfigAsync(
+            "llm_cost_today", "LLM Cost Today", "USD", "{{ value_json.cost_today_usd }}", device, ct,
+            deviceClass: "monetary", entityCategory: "diagnostic", stateTopicOverride: LlmUsageTopic);
+        await PublishSensorConfigAsync(
+            "llm_cost_total", "LLM Cost Total", "USD", "{{ value_json.cost_total_usd }}", device, ct,
+            deviceClass: "monetary", entityCategory: "diagnostic", stateTopicOverride: LlmUsageTopic,
+            stateClass: "total");
+        await PublishSensorConfigAsync(
+            "llm_calls_today", "LLM Calls Today", null, "{{ value_json.calls_today }}", device, ct,
+            entityCategory: "diagnostic", stateTopicOverride: LlmUsageTopic);
+        await PublishSensorConfigAsync(
+            "llm_calls_total", "LLM Calls Total", null, "{{ value_json.calls_total }}", device, ct,
+            entityCategory: "diagnostic", stateTopicOverride: LlmUsageTopic, stateClass: "total_increasing");
+        await PublishSensorConfigAsync(
+            "llm_model", "LLM Model", null, "{{ value_json.model }}", device, ct,
+            entityCategory: "diagnostic", stateTopicOverride: LlmUsageTopic);
         if (options.DebugMode)
         {
             await PublishDebugDiscoveryAsync(device, ct);
@@ -377,7 +413,8 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
         string? deviceClass = null,
         string? entityCategory = null,
         string? stateTopicOverride = null,
-        string? jsonAttributesTopic = null)
+        string? jsonAttributesTopic = null,
+        string? stateClass = null)
     {
         var config = new Dictionary<string, object?>
         {
@@ -389,6 +426,7 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             ["device"] = device
         };
         if (unit is not null) config["unit_of_measurement"] = unit;
+        if (stateClass is not null) config["state_class"] = stateClass;
         if (deviceClass is not null) config["device_class"] = deviceClass;
         if (entityCategory is not null) config["entity_category"] = entityCategory;
         if (jsonAttributesTopic is not null) config["json_attributes_topic"] = jsonAttributesTopic;

@@ -34,6 +34,13 @@ export Monitor__Vision__DebugSaveAnnotatedImages="$(jq -r '.debug_enabled' "$CON
 export Monitor__Vision__DebugHighlightDough="$(jq -r '.debug_highlight_dough // false' "$CONFIG_PATH")"
 export Monitor__Mqtt__DebugMode="$(jq -r '.debug_enabled' "$CONFIG_PATH")"
 
+# --- Vision LLM (OpenRouter) ---
+export Monitor__Llm__ApiKey="$(jq -r '.llm_api_key // ""' "$CONFIG_PATH")"
+export Monitor__Llm__Model="$(jq -r '.llm_model // "google/gemini-3.8-flash"' "$CONFIG_PATH")"
+export Monitor__Llm__MaxCallsPerDay="$(jq -r '.llm_max_calls_per_day // 4500' "$CONFIG_PATH")"
+export Monitor__Llm__SamplesPerCycle="$(jq -r '.llm_samples_per_cycle // 3' "$CONFIG_PATH")"
+export Monitor__Llm__UsageFilePath="/data/llm_usage.json"
+
 # --- OpenCvSharp native libraries ---
 export LD_LIBRARY_PATH="/app/runtimes/linux-x64/native${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
