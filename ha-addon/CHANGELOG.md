@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.5
+
+- Fix: with a configured `llm_model` of `google/gemini-3.8-flash` (or any model whose reasoning is
+  mandatory) 0.2.4 failed every cycle with `llm_error` (HTTP 400 "Reasoning is mandatory"), so no
+  session start and no debug markup appeared. The client now answers that 400 by retrying once with
+  reasoning `minimal` and remembers it per model; no option change is needed.
+
 ## 0.2.4
 
 - LLM cost: reasoning is switched off and the default model is now `google/gemini-3-flash-preview`.

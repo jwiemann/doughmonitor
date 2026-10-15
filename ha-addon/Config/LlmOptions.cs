@@ -25,9 +25,10 @@ public sealed class LlmOptions
     /// a small value truncates the JSON answer.</summary>
     public int MaxTokens { get; init; } = 2000;
 
-    /// <summary>OpenRouter reasoning: "off" disables it (cheapest; rejected with HTTP 400 by models
-    /// whose reasoning is mandatory, e.g. google/gemini-3.8-flash), "minimal"/"low"/... sets the
-    /// effort, empty omits the field. Thinking gains nothing for point localisation.</summary>
+    /// <summary>OpenRouter reasoning: "off" disables it (cheapest). A model that answers HTTP 400
+    /// "Reasoning is mandatory" (e.g. google/gemini-3.8-flash) is switched to "minimal"
+    /// automatically. "minimal"/"low"/... sets the effort, empty omits the field. Thinking gains
+    /// nothing for point localisation.</summary>
     public string ReasoningEffort { get; init; } = "off";
 
     public string BaseUrl { get; init; } = "https://openrouter.ai/api/v1";

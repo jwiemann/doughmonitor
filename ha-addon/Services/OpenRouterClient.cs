@@ -22,6 +22,13 @@ public sealed class OpenRouterClient(HttpClient http, LlmOptions options) : IVis
             {
                 return await SendOnceAsync(body, ct);
             }
+            catch (LlmException ex) when (IsReasoningMandatory(ex)
+                                          && options.ReasoningEffort.Equals("off", StringComparison.OrdinalIgnoreCase)
+                                          && _reasoningRequired.TryAdd(request.Model, true))
+            {
+                body = BuildBody(request);
+                attempt--;
+            }
             catch (LlmException ex) when (attempt < options.MaxRetries && IsTransient(ex.StatusCode))
             {
                 await Task.Delay(TimeSpan.FromSeconds(2 * (attempt + 1)), ct);
@@ -113,6 +120,21 @@ public sealed class OpenRouterClient(HttpClient http, LlmOptions options) : IVis
         }
     }
 
+    /// <summary>Models that answered "Reasoning is mandatory" to <c>off</c>: they get
+    /// <see cref="MandatoryReasoningEffort"/> from then on, so a configured model that cannot run
+    /// without thinking works instead of failing every cycle.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _reasoningRequired = new();
+
+    private const string MandatoryReasoningEffort = "minimal";
+
+    private string? EffectiveEffort(string model) =>
+        options.ReasoningEffort.Equals("off", StringComparison.OrdinalIgnoreCase) && _reasoningRequired.ContainsKey(model)
+            ? MandatoryReasoningEffort
+            : options.ReasoningEffort;
+
+    internal static bool IsReasoningMandatory(LlmException ex) =>
+        ex.StatusCode == 400 && ex.Message.Contains("Reasoning is mandatory", StringComparison.OrdinalIgnoreCase);
+
     private string BuildBody(LlmRequest request)
     {
         var dataUrl = "data:image/jpeg;base64," + Convert.ToBase64String(request.Jpeg);
@@ -122,11 +144,11 @@ public sealed class OpenRouterClient(HttpClient http, LlmOptions options) : IVis
             temperature = request.Temperature,
             max_tokens = options.MaxTokens,
             usage = new { include = true },
-            reasoning = string.IsNullOrWhiteSpace(options.ReasoningEffort)
+            reasoning = EffectiveEffort(request.Model) is not { Length: > 0 } effort
                 ? null
-                : options.ReasoningEffort.Equals("off", StringComparison.OrdinalIgnoreCase)
+                : effort.Equals("off", StringComparison.OrdinalIgnoreCase)
                     ? new { effort = (string?)null, enabled = (bool?)false }
-                    : new { effort = options.ReasoningEffort, enabled = (bool?)null },
+                    : new { effort, enabled = (bool?)null },
             response_format = new
             {
                 type = "json_schema",

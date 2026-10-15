@@ -240,7 +240,7 @@ Detection runs through a vision model on OpenRouter; the classic computer-vision
 | `llm_model` | Model slug that accepts images (default `google/gemini-3-flash-preview`) |
 | `llm_max_calls_per_day` | Hard cap on API calls per UTC day (default 4500 = 3 samples per minute) |
 | `llm_samples_per_cycle` | Independent draws per frame; the median level is used (default 3, 1 = off) |
-| `llm_reasoning_effort` | `off` (default, cheapest) or `minimal`/`low`/... for models whose reasoning is mandatory (`google/gemini-3.8-flash` answers HTTP 400 with `off`) |
+| `llm_reasoning_effort` | `off` (default, cheapest) or `minimal`/`low`/...; a model whose reasoning is mandatory (`google/gemini-3.8-flash`) is switched from `off` to `minimal` automatically |
 
 Per cycle: the frame is gated (`Vision:MinFrameIntensity`, P90 of the gray levels; contrast is not
 gated), cropped to `Vision:RoiX/RoiY/RoiWidth/RoiHeight` when set, scaled to
