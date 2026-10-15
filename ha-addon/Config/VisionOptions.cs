@@ -104,7 +104,7 @@ public sealed class VisionOptions
     public int SurfaceContinuityMinutes { get; init; } = 30;
 
     /// <summary>Fastest plausible surface movement for the continuity search, in pixels per
-    /// minute (mirrors <c>AnalysisOptions.MaxRisePxPerMinute</c>); the search band is this
+    /// minute (classic detector, disabled); the search band is this
     /// times the elapsed minutes plus a fixed margin. Only upward movement is rate-limited:
     /// collapsed dough can fall arbitrarily fast.</summary>
     public double SurfaceContinuityMaxPxPerMinute { get; init; } = 4.0;

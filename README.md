@@ -237,9 +237,10 @@ Detection runs through a vision model on OpenRouter; the classic computer-vision
 | Option | Meaning |
 |---|---|
 | `llm_api_key` | OpenRouter API key (required; without it every cycle reports `llm_error`) |
-| `llm_model` | Model slug that accepts images (default `google/gemini-3.8-flash`) |
+| `llm_model` | Model slug that accepts images (default `google/gemini-3-flash-preview`) |
 | `llm_max_calls_per_day` | Hard cap on API calls per UTC day (default 4500 = 3 samples per minute) |
 | `llm_samples_per_cycle` | Independent draws per frame; the median level is used (default 3, 1 = off) |
+| `llm_reasoning_effort` | `off` (default, cheapest) or `minimal`/`low`/... for models whose reasoning is mandatory (`google/gemini-3.8-flash` answers HTTP 400 with `off`) |
 
 Per cycle: the frame is gated (`Vision:MinFrameIntensity`, P90 of the gray levels; contrast is not
 gated), cropped to `Vision:RoiX/RoiY/RoiWidth/RoiHeight` when set, scaled to
@@ -256,15 +257,16 @@ of cycles above 10 px, and written to `diagnostics-*.jsonl` (`sample_spread_px`)
 small spread means one sample would give the same level and `llm_samples_per_cycle` can drop to 1. A
 cycle needs a majority of usable samples; otherwise the most common rejection is reported.
 
-Cost (measured 2026-10-14, check OpenRouter prices): about $0.0024 per call with
-`google/gemini-3.8-flash` (1,700 prompt tokens), so about $0.007 per 3-sample cycle: roughly
-$10 per day at one cycle per minute, $2 per day at the default 5-minute interval. Setting the
-ROI to the jar reduces tokens further.
+Cost (measured 2026-10-15, check OpenRouter prices): reasoning off with `google/gemini-3-flash-preview`
+is about $0.0013 per call, so about $0.004 per 3-sample cycle: roughly $5 per day at one cycle per
+minute, $1.15 per day at the default 5-minute interval ($0.4 per day with 1 sample). With
+`google/gemini-3.8-flash` (reasoning mandatory, `minimal`) it was $0.0023 per call, $2 per day.
+Setting the ROI to the jar reduces tokens further.
 
 Replay uses the same detector and needs `Monitor__Llm__ApiKey` in the environment:
 
 ```
-dotnet run -- replay <folder> --model google/gemini-3.8-flash --samples 3 --max-calls 200 --llm-cache llm-cache
+dotnet run -- replay <folder> --model google/gemini-3-flash-preview --samples 3 --max-calls 200 --llm-cache llm-cache
 ```
 
 Answers are cached on disk by (model, prompt, image), so repeating a replay is free;

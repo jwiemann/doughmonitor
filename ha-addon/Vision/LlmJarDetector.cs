@@ -33,7 +33,7 @@ public sealed class LlmJarDetector(
     public DetectionDiagnostics? LastDiagnostics { get; private set; }
 
     /// <summary>"detected", "dark_frame", "decode_failed", "no_jar", "no_surface",
-    /// "llm_rejected", "llm_error" or "llm_budget".</summary>
+    /// "geometry_warmup", "llm_rejected", "llm_error" or "llm_budget".</summary>
     public string LastOutcome { get; private set; } = "no_data";
 
     public byte[]? LatestAnnotatedImageBytes { get; private set; }
@@ -219,6 +219,11 @@ public sealed class LlmJarDetector(
         }
         var stable = Median(_boxes);
         result = i;
+        if (_boxes.Count < llm.MinGeometryFrames)
+        {
+            result = i with { Outcome = "geometry_warmup", Reason = "too_few_outlines" };
+            return null;
+        }
         if (i.SurfaceRow!.Value >= stable.Bottom)
         {
             result = i with { Outcome = "no_surface", Reason = "surface_below_jar_bottom" };

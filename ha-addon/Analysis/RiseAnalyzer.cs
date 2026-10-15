@@ -33,10 +33,12 @@ public sealed class RiseAnalyzer
     private double? _lastAcceptedHeightPx;
     private DateTimeOffset? _lastMeasurementTime;
     private int _implausibleStreak;
+    private readonly List<double> _startHeights = [];
     private List<double>? _pendingCollapseHeights;
     private double _maximumSlope;
     private double? _peakReferenceRisePercent;
     private DateTimeOffset? _lastPublishedEta;
+    private readonly List<PublishedForecast> _recentForecasts = [];
     private SessionSummary? _pendingSummary;
 
     public RiseAnalyzer(AnalysisOptions options)
@@ -96,11 +98,16 @@ public sealed class RiseAnalyzer
             // already confirmed above, and the slope never bridges a gap beyond its window.
         }
         _implausibleStreak = 0;
+        if (SettleBaseline(m) is { } settled)
+        {
+            baseline = settled;
+            rawRisePercent = (m.DoughHeightPx - baseline) / baseline * 100.0;
+        }
         var smoothedHeightPx = Smooth(m.DoughHeightPx);
         _lastAcceptedHeightPx = smoothedHeightPx;
         _lastMeasurementTime = m.Time;
         var risePercent = (smoothedHeightPx - baseline) / baseline * 100.0;
-        _samples.Add(new Sample(m.Time, risePercent));
+        _samples.Add(new Sample(m.Time, risePercent, rawRisePercent));
         var rateSample = ComputeRate(m.Time);
         double? slope = rateSample?.Slope;
         if (rateSample is not null)
@@ -110,18 +117,22 @@ public sealed class RiseAnalyzer
         }
         RateForecast? forecast = null;
         if (!_peaked && _samples.Count >= _options.MinSamplesForFit && ForecastIsInformative())
-            forecast = RateTrendForecaster.TryForecast(_slopes, risePercent, m.Time);
+            forecast = PeakForecaster.TryForecast(
+                _samples, m.Time, _options.RateNoiseFloorPx / baseline * 100.0 / 2,
+                continuing: _recentForecasts.Count > 0
+                            && (m.Time - _recentForecasts[^1].Time).TotalMinutes <= ContinuationMinutes);
         if (slope is not null) UpdatePeakState();
         if (_peaked) forecast = null;
         DateTimeOffset? eta = null, etaLow = null, etaHigh = null;
-        if (forecast is not null)
-            (eta, etaLow, etaHigh) = PublishEta(m.Time, forecast);
+        double? peakRise = null;
+        if (!_peaked && Publish(m.Time, forecast) is { } published)
+            (eta, etaLow, etaHigh, peakRise) = (published.Point, published.Low, published.High, published.Rise);
         SaveState();
         return new RiseReading(
             m.Time,
             Math.Round(ClampRisePercent(risePercent), 1),
             slope is null ? null : Math.Round(slope.Value, 1),
-            forecast is null ? null : Math.Round(ClampPredictedPeak(forecast.PeakRisePercent), 0),
+            peakRise is null ? null : Math.Round(ClampPredictedPeak(peakRise.Value), 0),
             eta,
             etaLow,
             etaHigh,
@@ -130,39 +141,56 @@ public sealed class RiseAnalyzer
             SessionStart: _sessionStart);
     }
 
-    /// <summary>Turns the rate-trend forecast into the published point ETA (only while the
-    /// windows agree within <see cref="AnalysisOptions.MaxEtaSpreadMinutes"/>) and the range.</summary>
-    private (DateTimeOffset? Point, DateTimeOffset Low, DateTimeOffset High) PublishEta(
-        DateTimeOffset now, RateForecast forecast)
+    /// <summary>The forecast as published: the median of the forecasts of the last few cycles, so
+    /// one noisy cycle does not make the ETA jump. A cycle whose fit is momentarily undetermined
+    /// keeps the previous forecast for a few minutes (while its ETA still lies ahead) instead of
+    /// blanking the sensors. The range is the spread the forecasts report, widened to include the
+    /// published point.</summary>
+    private PublishedValues? Publish(DateTimeOffset now, RateForecast? forecast)
     {
-        DateTimeOffset? point = null;
-        if ((forecast.HoursHigh - forecast.HoursLow) * 60.0 <= _options.MaxEtaSpreadMinutes)
-        {
-            point = now.AddHours(forecast.HoursToPeak);
-            _lastPublishedEta = point;
-        }
-        return (point, now.AddHours(forecast.HoursLow), now.AddHours(forecast.HoursHigh));
+        _recentForecasts.RemoveAll(f => (now - f.Time).TotalMinutes > ContinuationMinutes);
+        if (forecast is not null)
+            _recentForecasts.Add(new PublishedForecast(
+                now, now.AddHours(forecast.HoursToPeak), now.AddHours(forecast.HoursLow),
+                now.AddHours(forecast.HoursHigh), forecast.PeakRisePercent));
+        var window = _recentForecasts
+            .Where(f => (now - f.Time).TotalMinutes <= ForecastSmoothingMinutes && f.Eta > now)
+            .ToList();
+        if (window.Count == 0 || (forecast is null && (now - window[^1].Time).TotalMinutes > HoldMinutes))
+            return null;
+        DateTimeOffset MedianTime(Func<PublishedForecast, DateTimeOffset> pick) =>
+            new((long)window.Select(f => (double)pick(f).UtcTicks).Median(), TimeSpan.Zero);
+        var point = MedianTime(f => f.Eta);
+        _lastPublishedEta = point;
+        var (low, high) = (MedianTime(f => f.Low), MedianTime(f => f.High));
+        return new PublishedValues(
+            point, low < point ? low : point, high > point ? high : point, window.Select(f => f.Rise).Median());
     }
+
+    /// <summary>Forecasts this many minutes back are medianed into the published one.</summary>
+    private const double ForecastSmoothingMinutes = 15;
+
+    /// <summary>How long the previous forecast is kept when a cycle yields none.</summary>
+    private const double HoldMinutes = 10;
+
+    /// <summary>A forecast counts as running when the last one is at most this many minutes old; a
+    /// running forecast survives a noisier fit than a new one would.</summary>
+    private const double ContinuationMinutes = 30;
+
+    private sealed record PublishedForecast(
+        DateTimeOffset Time, DateTimeOffset Eta, DateTimeOffset Low, DateTimeOffset High, double Rise);
+
+    private sealed record PublishedValues(DateTimeOffset Point, DateTimeOffset Low, DateTimeOffset High, double Rise);
 
     private double SlopeEvidence => _options.MinSlopeEvidenceSigmas * _options.MaxRateStdErrPercentPerHour;
 
-    /// <summary>Fraction of the session's maximum rate the current rate must have dropped by
-    /// before the rate trend is trusted as a turn (at least the statistical margin).</summary>
-    private const double TurnFractionOfMaxSlope = 0.15;
-
-    private double TurnMargin(double evidence) =>
-        Math.Max(evidence, TurnFractionOfMaxSlope * _maximumSlope);
-
-    /// <summary>A forecast needs proof that the rise has turned: the session's maximum rate must
-    /// show a real rise happened, and the current rate must sit measurably below it. While the
-    /// rate is still at its maximum (accelerating), the curve does not identify a peak.</summary>
-    private bool ForecastIsInformative()
-    {
-        if (_samples[^1].RisePercent < _options.MinRisePercentForPeak || _slopes.Count == 0)
-            return false;
-        var evidence = SlopeEvidence;
-        return _maximumSlope >= evidence && _slopes[^1].Slope <= _maximumSlope - TurnMargin(evidence);
-    }
+    /// <summary>A forecast needs evidence that the dough really rose: the prior minimum rise of a
+    /// fed jar, and a maximum rate well above the rate's error bound. Whether the rate has already
+    /// turned is decided by the forecaster from the shape of the recent rise.</summary>
+    private bool ForecastIsInformative() =>
+        _samples[^1].RisePercent >= Math.Max(_options.MinRisePercentForPeak, _options.MinRisePercentForForecast)
+        && _slopes.Count > 0
+        && _maximumSlope >= SlopeEvidence;
 
     private double Smooth(double rawHeightPx)
     {
@@ -172,13 +200,59 @@ public sealed class RiseAnalyzer
         return _heightWindow.Median();
     }
 
+    /// <summary>Domain gate for one raw reading. The dough is fed once a day and then follows a
+    /// smooth curve: its level moves by at most <see cref="AnalysisOptions.MaxRisePercentPerHour"/>
+    /// up and <see cref="AnalysisOptions.MaxFallPercentPerHour"/> down and never jumps, so a reading
+    /// that sits far off the recent trend is a misdetection, not dough. The reference is the
+    /// robust trend of the last accepted readings (the rate clamped to the physical limits),
+    /// the allowed deviation the reading noise seen there; with too few readings the reference is
+    /// the last accepted level and the allowance grows with the elapsed time at the fastest
+    /// physical rate. Real events (feeding, handling) were confirmed before this gate.</summary>
     private bool IsImplausibleJump(double rawHeightPx, DateTimeOffset now)
     {
-        if (_lastAcceptedHeightPx is null || _lastMeasurementTime is null) return false;
+        if (_lastAcceptedHeightPx is null || _lastMeasurementTime is null
+            || _baselineDoughHeightPx is not { } baseline || baseline <= 0) return false;
         var minutes = (now - _lastMeasurementTime.Value).TotalMinutes;
         if (minutes <= 0) return true; // non-advancing or out-of-order timestamp
-        var maxDelta = _options.MaxRisePxPerMinute * minutes + _options.JitterTolerancePx;
-        return Math.Abs(rawHeightPx - _lastAcceptedHeightPx.Value) > maxDelta;
+        var risePxPerHour = _options.MaxRisePercentPerHour / 100.0 * baseline;
+        var fallPxPerHour = _options.MaxFallPercentPerHour / 100.0 * baseline;
+        if (ExpectedHeight(now, baseline, -fallPxPerHour, risePxPerHour) is { } expected)
+            return Math.Abs(rawHeightPx - expected.HeightPx)
+                   > Math.Max(_options.OutlierTolerancePx, OutlierScatterFactor * expected.ScatterPx);
+        var budget = Math.Max(risePxPerHour, fallPxPerHour) / 60.0 * minutes + _options.OutlierTolerancePx;
+        return Math.Abs(rawHeightPx - _lastAcceptedHeightPx.Value) > budget;
+    }
+
+    private const int TrendWindowMinutes = 45;
+    private const int TrendMinReadings = 5;
+    private const double TrendMinSpanMinutes = 20;
+    private const double OutlierScatterFactor = 3;
+
+    /// <summary>The level expected at <paramref name="now"/> from the robust (Theil-Sen) line through
+    /// the unsmoothed levels of the last <see cref="TrendWindowMinutes"/>, with the scatter of
+    /// those levels around it; null while fewer than <see cref="TrendMinReadings"/> readings
+    /// spanning <see cref="TrendMinSpanMinutes"/> exist.</summary>
+    private (double HeightPx, double ScatterPx)? ExpectedHeight(
+        DateTimeOffset now, double baseline, double minPxPerHour, double maxPxPerHour)
+    {
+        var points = new List<(double Hours, double HeightPx)>();
+        for (var i = _samples.Count - 1; i >= 0; i--)
+        {
+            var age = now - _samples[i].Time;
+            if (age.TotalMinutes > TrendWindowMinutes) break;
+            points.Add((-age.TotalHours, baseline * (1 + (_samples[i].RawRisePercent ?? _samples[i].RisePercent) / 100.0)));
+        }
+        if (points.Count < TrendMinReadings
+            || (points[0].Hours - points[^1].Hours) * 60 < TrendMinSpanMinutes) return null;
+        var slopes = new List<double>();
+        for (var i = 0; i < points.Count; i++)
+            for (var j = i + 1; j < points.Count; j++)
+                if (points[i].Hours != points[j].Hours)
+                    slopes.Add((points[i].HeightPx - points[j].HeightPx) / (points[i].Hours - points[j].Hours));
+        var slope = Math.Clamp(slopes.Median(), minPxPerHour, maxPxPerHour);
+        var level = points.Select(p => p.HeightPx - slope * p.Hours).Median();
+        var scatter = points.Select(p => Math.Abs(p.HeightPx - slope * p.Hours - level)).Median() * 1.4826;
+        return (level, scatter);
     }
 
     private static double ClampRisePercent(double value) =>
@@ -279,6 +353,38 @@ public sealed class RiseAnalyzer
         _peaked = false;
     }
 
+    /// <summary>During the first <see cref="AnalysisOptions.BaselineSettleMinutes"/> of a session the
+    /// baseline is the median of its readings so far instead of the first one: a single reading
+    /// is off by 10 px or more now and then (586 px against 598 px on 2026-10-14, 11 % of the start
+    /// height), and that error scales every rise percentage of the session. Dough hardly rises in
+    /// that time. Returns the new baseline when it changed.</summary>
+    private double? SettleBaseline(LevelMeasurement m)
+    {
+        if (_startHeights.Count == 0 || _baselineDoughHeightPx is not { } baseline) return null;
+        if ((m.Time - _sessionStart).TotalMinutes > _options.BaselineSettleMinutes)
+        {
+            _startHeights.Clear();
+            return null;
+        }
+        _startHeights.Add(m.DoughHeightPx);
+        var settled = _startHeights.Median();
+        if (Math.Abs(settled - baseline) < 1e-9) return null;
+        var factor = baseline / settled;
+        double Rescale(double risePercent) => (risePercent + 100.0) * factor - 100.0;
+        for (var i = 0; i < _samples.Count; i++)
+            _samples[i] = _samples[i] with
+            {
+                RisePercent = Rescale(_samples[i].RisePercent),
+                RawRisePercent = _samples[i].RawRisePercent is { } raw ? Rescale(raw) : null
+            };
+        for (var i = 0; i < _slopes.Count; i++)
+            _slopes[i] = _slopes[i] with { Slope = _slopes[i].Slope * factor };
+        _maximumSlope *= factor;
+        _peakReferenceRisePercent = _peakReferenceRisePercent is { } reference ? Rescale(reference) : null;
+        _baselineDoughHeightPx = settled;
+        return settled;
+    }
+
     /// <summary>Re-expresses the running session against the dough floor, which lies
     /// <paramref name="offsetPx"/> above the glass bottom the baseline was measured from. Heights
     /// shrink by the offset, so every stored rise percentage and slope scales by
@@ -291,7 +397,11 @@ public sealed class RiseAnalyzer
         if (offsetPx < 0 || rebased < baseline * 0.5) return null;
         var scale = baseline / rebased;
         for (var i = 0; i < _samples.Count; i++)
-            _samples[i] = _samples[i] with { RisePercent = _samples[i].RisePercent * scale };
+            _samples[i] = _samples[i] with
+            {
+                RisePercent = _samples[i].RisePercent * scale,
+                RawRisePercent = _samples[i].RawRisePercent * scale
+            };
         for (var i = 0; i < _slopes.Count; i++)
             _slopes[i] = _slopes[i] with { Slope = _slopes[i].Slope * scale };
         _maximumSlope *= scale;
@@ -301,6 +411,7 @@ public sealed class RiseAnalyzer
         foreach (var height in window) _heightWindow.Enqueue(height);
         _lastAcceptedHeightPx -= offsetPx;
         _pendingCollapseHeights?.Clear();
+        _startHeights.Clear();
         _baselineDoughHeightPx = rebased;
         _baselineOnDoughFloor = true;
         return rebased;
@@ -317,11 +428,13 @@ public sealed class RiseAnalyzer
         _peaked = false;
         _peakReferenceRisePercent = null;
         _pendingCollapseHeights?.Clear();
+        _startHeights.Clear();
         _maximumSlope = 0;
         _lastAcceptedHeightPx = null;
         _lastMeasurementTime = null;
         _implausibleStreak = 0;
         _lastPublishedEta = null;
+        _recentForecasts.Clear();
     }
 
     /// <summary>Stores the summary of the session being replaced (kept only for sessions with
@@ -356,6 +469,7 @@ public sealed class RiseAnalyzer
         CaptureSessionSummary(time);
         ResetSession(time, heightPx, onDoughFloor);
         _lastAcceptedHeightPx = heightPx;
+        _startHeights.Add(heightPx);
         _lastMeasurementTime = time;
         SaveState();
         return new RiseReading(time, 0, null, null, null, null, null, false, NewSession: true, SessionStart: time);

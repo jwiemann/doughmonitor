@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.2.4
+
+- LLM cost: reasoning is switched off and the default model is now `google/gemini-3-flash-preview`.
+  `google/gemini-3.8-flash` cannot run without reasoning (OpenRouter answers HTTP 400 "Reasoning is
+  mandatory"), and with `minimal` about 20 % of its draws spent 400-2000 hidden thinking tokens
+  (19 % of the 2026-10-14 spend) although the visible answer is always about 250 characters.
+- New add-on option `llm_reasoning_effort` (default `off`; `minimal`/`low`/... or empty for models
+  that require reasoning, e.g. `minimal` with `google/gemini-3.8-flash`).
+- Measured on the 10 labelled frames (3 samples): `gemini-3-flash-preview` without reasoning
+  median surface error 5 px (3.8-flash: 4 px), jar bottom 6 px (5 px), one frame above 30 px (two);
+  $0.0039 vs $0.0066 per 3-sample cycle. 2026-10-14 session replay (245 cycles, same pipeline):
+  $1.00 vs $1.65, level difference median 1.2 px. `qwen3-vl-235b-instruct` ($0.0008 per cycle)
+  has 26 px median error, `gemini-2.5-flash` 74 px: both unusable.
+- Forecast needs a minimum rise (`Analysis:MinRisePercentForForecast`, default 70 %): a daily-fed
+  jar rises 100-130 % before it peaks, while the 2026-10-14 session had mid-rise stalls (19 % for
+  45 minutes, 53 % for 20 minutes) that the forecaster took for the turn, publishing ETAs 3-6 h
+  too early on the 3.8-flash readings (6 cycles). "Peaked" is unaffected.
+- New outcome `geometry_warmup`: no level is reported until the jar geometry window holds
+  `Llm:MinGeometryFrames` (3) outlines. The first outline put the jar bottom at 677 px (real
+  709 px) and so the session start height at 91 px instead of about 115-123 px, inflating every
+  rise percentage (observed on a replay started mid-session; also applies after a restart).
+- The session baseline is the median of the first 20 minutes of readings
+  (`Analysis:BaselineSettleMinutes`) instead of the first reading alone, and the stored rise and
+  rates are rescaled as it settles. One reading was 12 px low on 2026-10-14 (586 against 598 px),
+  which showed the same dough as 105 % instead of 126 % rise. After the change the 14 Oct replays
+  of 3.8-flash and 3-flash (3 and 1 samples) report a maximum of 123.5 / 126.2 / 129.2 %.
+
+## 0.2.3
+
+- Peak forecast (`peak_eta`, `predicted_peak_percent`, `peak_eta_low`/`peak_eta_high`) rebuilt;
+  in the 2026-10-14 session none of the four was ever published. Causes: the forecaster needed
+  windows of 1-minute rate samples, but the LLM detector delivers one reading per 5 min; the
+  point ETA was dropped whenever its windows disagreed by more than 60 min (almost always); and a
+  forecast had to survive a fixed "rate has fallen by 15 % of its maximum" gate every single cycle.
+- New `PeakForecaster`: the rate ramps up, holds and falls to zero within 1.5-2 h (measured
+  2026-10-13 and 10-14). That shape (rate maximum time, decline duration, three decline curvatures)
+  is fitted on a grid to 10-minute medians of the unsmoothed rise of the last 4 h, independent of
+  the sampling interval. The fit errors weight the grid; its weighted percentiles are the
+  earliest/latest times and heights, its best fits the point ETA and height. No forecast is made
+  until the data show the rate maximum already lies in the past (the steady 20-24 %/h phase of
+  the 10-14 session correctly yields nothing), nor once the rise has stopped.
+- A running forecast survives a cycle with a noisier fit (looser gates), the published values are
+  the median of the last 15 min of forecasts and are kept up to 10 min through a missing one.
+- On the two measured sessions the forecast appears 1 h before the rise stops (10-14: 22:30 UTC,
+  forecast 22:28-22:59 with 121-126 % against 120-125 % reached); the range always held the stop.
+  Noisy variants (3 px scatter, 0.75x-1.3x speed): median error 0 min, 90 % within 26 min, once a
+  forecast exists; it exists in about 40 % of the last 90 minutes (the turn is statistically
+  invisible earlier).
+- Removed `RateTrendForecaster` and `MaxEtaSpreadMinutes`. `Sample` now stores the unsmoothed rise.
+- False readings are now cleaned out with what is known about fed dough: it follows a smooth
+  curve, rises at most ~26 %/h (measured) and falls at ~8 %/h. The plausibility gate compares each
+  raw reading with the robust trend of the last 45 min (limits `MaxRisePercentPerHour` 40,
+  `MaxFallPercentPerHour` 15, replacing the classic detector's `MaxRisePxPerMinute` of 4 px/min,
+  i.e. 200 %/h) and rejects it when it is off by more than `OutlierTolerancePx` (9 px) or three
+  times the recent scatter. A level that persists is still accepted after
+  `MaxImplausibleJumpRejects` frames (handling). On the 10-14 session it rejects the two
+  misdetections of 433 and 439 px at 23:57/00:22 UTC (20 px above the plateau, both with
+  23-26 px disagreement between the model's three draws) and 5 smaller ones; the forecast timing
+  is unchanged. Dropping cycles by sample disagreement instead was tested and made the forecast
+  later (it removes good readings during the turn), so it is not used.
+
 ## 0.2.2
 
 - Debug image reduced to three lines: the glass outline (green), the measured level (red) and the

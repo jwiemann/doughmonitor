@@ -14,9 +14,12 @@ public class DoughFloorTests
 
     private static RiseAnalyzer NewAnalyzer(string? statePath = null) => new(new AnalysisOptions
     {
+        BaselineSettleMinutes = 0,
         StateFilePath = statePath,
         MedianWindowSize = 1,
-        MaxRisePxPerMinute = 1000
+        MaxRisePercentPerHour = 1e6,
+        MaxFallPercentPerHour = 1e6,
+        OutlierTolerancePx = 1e6
     });
 
     /// <summary>Glass bottom at row 1000, dough floor at row 980.</summary>

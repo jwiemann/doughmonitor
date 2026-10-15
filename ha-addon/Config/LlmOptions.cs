@@ -7,7 +7,7 @@ public sealed class LlmOptions
     public string? ApiKey { get; init; }
 
     /// <summary>OpenRouter model slug; must accept image input.</summary>
-    public string Model { get; init; } = "google/gemini-3.8-flash";
+    public string Model { get; init; } = "google/gemini-3-flash-preview";
 
     /// <summary>Independent draws of every frame per cycle; the detector uses the median level.
     /// 1 disables sampling. Cost scales linearly.</summary>
@@ -25,9 +25,10 @@ public sealed class LlmOptions
     /// a small value truncates the JSON answer.</summary>
     public int MaxTokens { get; init; } = 2000;
 
-    /// <summary>OpenRouter reasoning effort ("minimal", "low", ...); empty omits the field.
-    /// Thinking adds cost and latency and gains nothing for point localisation.</summary>
-    public string ReasoningEffort { get; init; } = "minimal";
+    /// <summary>OpenRouter reasoning: "off" disables it (cheapest; rejected with HTTP 400 by models
+    /// whose reasoning is mandatory, e.g. google/gemini-3.8-flash), "minimal"/"low"/... sets the
+    /// effort, empty omits the field. Thinking gains nothing for point localisation.</summary>
+    public string ReasoningEffort { get; init; } = "off";
 
     public string BaseUrl { get; init; } = "https://openrouter.ai/api/v1";
 
@@ -56,6 +57,11 @@ public sealed class LlmOptions
     /// <summary>Accepted jar outlines kept for the median jar geometry (top, bottom, sides).
     /// The jar does not move, so the median stabilises bottom and top across noisy answers.</summary>
     public int GeometryWindow { get; init; } = 15;
+
+    /// <summary>Outlines needed in the geometry window before a level is reported. The jar bottom
+    /// is the median of the window, so a single early outline (observed 677 px against 709 px)
+    /// would set a session's start height far too low and inflate every rise percentage.</summary>
+    public int MinGeometryFrames { get; init; } = 3;
 
     /// <summary>Fraction of the frame size by which the median of the newest outlines may differ
     /// from the older median before it counts as a camera move.</summary>

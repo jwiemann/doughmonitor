@@ -20,6 +20,7 @@ public class JarLevelDetectorPhotoTests
 
     private static RiseAnalyzer NewAnalyzer(string? statePath = null) => new(new AnalysisOptions
     {
+        BaselineSettleMinutes = 0,
         StateFilePath = statePath,
         MedianWindowSize = 1
     });

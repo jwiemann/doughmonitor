@@ -41,24 +41,38 @@ public sealed class AnalysisOptions
     /// have happened), so small but real rises (e.g. a kept starter) still get a forecast.</summary>
     public double MinRisePercentForPeak { get; init; } = 5;
 
+    /// <summary>Domain prior: the daily-fed jar rises by 100-130 % before it peaks (measured
+    /// 2026-10-13 and 10-14). A forecast needs at least this much rise: below it a mid-rise stall
+    /// (19 % for 45 minutes and 53 % for 20 minutes on 2026-10-14) is indistinguishable from a turn
+    /// and produced ETAs hours too early. The real turn comes at 100 % or more, so a gate at 70 %
+    /// costs no forecast. A peak the rate itself confirms (<see cref="MinRisePercentForPeak"/>) is
+    /// not affected: a weak session still ends with "peaked", only without a forecast.</summary>
+    public double MinRisePercentForForecast { get; init; } = 70;
+
+    /// <summary>Minutes after a session's start during which its baseline is the median of the
+    /// readings so far instead of the first reading alone.</summary>
+    public double BaselineSettleMinutes { get; init; } = 20;
+
     /// <summary>A peak or forecast requires the session's maximum rate to reach this many
-    /// times <see cref="MaxRateStdErrPercentPerHour"/> (evidence of a real rise), and the
-    /// current rate to sit measurably below that maximum (a measured turn — the margin
-    /// grows with steep sessions, see the analyzer).</summary>
+    /// times <see cref="MaxRateStdErrPercentPerHour"/>: evidence that the dough really rose.</summary>
     public double MinSlopeEvidenceSigmas { get; init; } = 2.0;
 
-    /// <summary>Widest disagreement (minutes) between the rate-trend windows for which the
-    /// point ETA is still published; the low/high range is always published.</summary>
-    public double MaxEtaSpreadMinutes { get; init; } = 60;
+    /// <summary>Physical limits of the dough level, as % of the session's starting height per
+    /// hour. A fed dough rises at most about 26 %/h (measured) and falls after its peak at about
+    /// 8 %/h; the limits leave headroom. They bound the trend the plausibility gate extrapolates and
+    /// the movement it allows after a detection gap.</summary>
+    public double MaxRisePercentPerHour { get; init; } = 40;
 
-    /// <summary>Physical plausibility gate: dough cannot rise or fall faster than this many
-    /// pixels per minute. A raw reading that implies a faster change than
-    /// (MaxRisePxPerMinute * elapsed minutes + JitterTolerancePx) is rejected outright
-    /// (camera glitch, misdetected frame) rather than smoothed in and reported.</summary>
-    public double MaxRisePxPerMinute { get; init; } = 4.0;
+    public double MaxFallPercentPerHour { get; init; } = 15;
 
-    /// <summary>Flat allowance added on top of the rate-based plausibility budget, so normal
-    /// per-frame jitter between consecutive samples isn't rejected.</summary>
+    /// <summary>Smallest deviation (px) from the expected level at which a raw reading is rejected
+    /// outright as a misdetection (camera glitch, model error); three times the scatter of the
+    /// recent readings if that is larger. A cycle's reading scatters by about 3 px, three
+    /// times that is 9 px.</summary>
+    public double OutlierTolerancePx { get; init; } = 9.0;
+
+    /// <summary>Allowance (px) of the peak revocation: growth beyond the remembered peak by more
+    /// than this is needed to un-peak.</summary>
     public double JitterTolerancePx { get; init; } = 6.0;
 
     /// <summary>How many consecutive frames the plausibility gate above may reject before

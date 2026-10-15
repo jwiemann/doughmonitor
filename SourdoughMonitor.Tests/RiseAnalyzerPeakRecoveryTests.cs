@@ -18,8 +18,11 @@ public class RiseAnalyzerPeakRecoveryTests
         MinSamplesForFit = fitEnabled ? 8 : 1000,
         PeakConfirmWindows = 3,
         MedianWindowSize = 1,
-        MaxRisePxPerMinute = 1000,
+        MaxRisePercentPerHour = 1e6,
+        MaxFallPercentPerHour = 1e6,
+        OutlierTolerancePx = 1e6,
         JitterTolerancePx = 6,
+        BaselineSettleMinutes = 0,
         StateFilePath = stateFilePath
     };
 

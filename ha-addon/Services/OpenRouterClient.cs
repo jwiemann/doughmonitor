@@ -124,7 +124,9 @@ public sealed class OpenRouterClient(HttpClient http, LlmOptions options) : IVis
             usage = new { include = true },
             reasoning = string.IsNullOrWhiteSpace(options.ReasoningEffort)
                 ? null
-                : new { effort = options.ReasoningEffort },
+                : options.ReasoningEffort.Equals("off", StringComparison.OrdinalIgnoreCase)
+                    ? new { effort = (string?)null, enabled = (bool?)false }
+                    : new { effort = options.ReasoningEffort, enabled = (bool?)null },
             response_format = new
             {
                 type = "json_schema",

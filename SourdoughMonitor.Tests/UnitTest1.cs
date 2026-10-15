@@ -1,4 +1,4 @@
-﻿using SourdoughMonitor.Analysis;
+using SourdoughMonitor.Analysis;
 using SourdoughMonitor.Config;
 using SourdoughMonitor.Vision;
 
@@ -19,6 +19,10 @@ public class RiseAnalyzerTests
                 MinSamplesForFit = 3,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
+                MaxRisePercentPerHour = 1e6, // synthetic jumps: this test is not about the plausibility gate
+                MaxFallPercentPerHour = 1e6,
+                OutlierTolerancePx = 1e6,
+                BaselineSettleMinutes = 0, // the synthetic first step is the baseline
                 StateFilePath = null
             });
         var initial = analyzer.Analyze(
@@ -43,6 +47,10 @@ public class RiseAnalyzerTests
                 MinSamplesForFit = 3,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
+                MaxRisePercentPerHour = 1e6, // synthetic jumps: this test is not about the plausibility gate
+                MaxFallPercentPerHour = 1e6,
+                OutlierTolerancePx = 1e6,
+                BaselineSettleMinutes = 0,
                 StateFilePath = null
             });
         var start = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
@@ -72,6 +80,10 @@ public class RiseAnalyzerTests
                 MinSamplesForFit = 3,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
+                MaxRisePercentPerHour = 1e6, // synthetic jumps: this test is not about the plausibility gate
+                MaxFallPercentPerHour = 1e6,
+                OutlierTolerancePx = 1e6,
+                BaselineSettleMinutes = 0,
                 StateFilePath = null
             });
         var initial = analyzer.Analyze(
@@ -95,14 +107,16 @@ public class RiseAnalyzerTests
                 MinSamplesForFit = 3,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
+                MaxRisePercentPerHour = 1e6, // synthetic jumps: this test is not about the plausibility gate
+                MaxFallPercentPerHour = 1e6,
+                OutlierTolerancePx = 1e6,
+                BaselineSettleMinutes = 0,
                 StateFilePath = null
             });
         var initial = analyzer.Analyze(
             new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero), 100, 0, 200));
         Assert.NotNull(initial);
-        // DoughHeightPx = 200 - (-500) = 700, baseline = 100 => 600% rise. Spread over 4 hours
-        // so the plausibility gate (default 4px/min budget) treats it as a legitimate slow
-        // change rather than an implausible jump, exercising the clamp instead of the gate.
+        // DoughHeightPx = 200 - (-500) = 700, baseline = 100 => 600% rise: exercises the clamp.
         var next = analyzer.Analyze(
             new LevelMeasurement(new DateTimeOffset(2024, 1, 1, 4, 0, 0, TimeSpan.Zero), -500, 0, 200));
         Assert.NotNull(next);
@@ -120,6 +134,7 @@ public class RiseAnalyzerTests
                 MinSamplesForFit = 3,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
+                BaselineSettleMinutes = 0,
                 StateFilePath = null
             });
         var initial = analyzer.Analyze(
@@ -151,6 +166,7 @@ public class RiseAnalyzerTests
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
                 MaxImplausibleJumpRejects = 2,
+                BaselineSettleMinutes = 0,
                 StateFilePath = null
             });
         var initial = analyzer.Analyze(
@@ -187,6 +203,7 @@ public class RiseAnalyzerTests
                 MaxSessionHours = 36,
                 MedianWindowSize = 1,
                 CollapseConfirmSamples = 3,
+                BaselineSettleMinutes = 0,
                 StateFilePath = null
             });
         var start = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
@@ -223,6 +240,10 @@ public class RiseAnalyzerTests
                 MaxSessionHours = 36,
                 MedianWindowSize = 1,
                 CollapseConfirmSamples = 3,
+                MaxRisePercentPerHour = 1e6, // synthetic jumps: this test is not about the plausibility gate
+                MaxFallPercentPerHour = 1e6,
+                OutlierTolerancePx = 1e6,
+                BaselineSettleMinutes = 0,
                 StateFilePath = null
             });
         var start = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
@@ -257,6 +278,10 @@ public class RiseAnalyzerTests
                 MaxSessionHours = 36,
                 MedianWindowSize = 1,
                 CollapseConfirmSamples = 3,
+                MaxRisePercentPerHour = 1e6, // synthetic jumps: this test is not about the plausibility gate
+                MaxFallPercentPerHour = 1e6,
+                OutlierTolerancePx = 1e6,
+                BaselineSettleMinutes = 0,
                 StateFilePath = null
             });
         var start = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
@@ -286,6 +311,7 @@ public class RiseAnalyzerTests
                 MinSamplesForFit = 3,
                 PeakConfirmWindows = 3,
                 MaxSessionHours = 36,
+                BaselineSettleMinutes = 0, // the synthetic first step is the baseline
                 StateFilePath = stateFile
             };
             var analyzer = new RiseAnalyzer(options);
@@ -298,12 +324,12 @@ public class RiseAnalyzerTests
             // the first samples also still carry the median window's warm-up lag.
             for (var i = 1; i <= 20; i++)
                 last = analyzer.Analyze(
-                    new LevelMeasurement(start.AddMinutes(5 * i), 100 - 5 * i, 0, 200));
+                    new LevelMeasurement(start.AddMinutes(5 * i), 100 - 2.5 * i, 0, 200));
             Assert.NotNull(last);
             Assert.NotNull(last!.RiseRatePercentPerHour);
             // A restart must retain the same feeding session and calculated trend.
             var restored = new RiseAnalyzer(options);
-            var next = restored.Analyze(new LevelMeasurement(start.AddMinutes(105), 100 - 105, 0, 200));
+            var next = restored.Analyze(new LevelMeasurement(start.AddMinutes(105), 100 - 2.5 * 21, 0, 200));
             Assert.NotNull(next);
             Assert.False(next!.NewSession);
             Assert.Equal(start, next.SessionStart);
@@ -418,6 +444,7 @@ public class RiseAnalyzerTests
 
     private static RiseAnalyzer NewAnalyzer() => new(new AnalysisOptions
     {
+        BaselineSettleMinutes = 0,
         SlopeWindowMinutes = 40,
         ResetDropFraction = 0.25,
         MinSamplesForFit = 3,

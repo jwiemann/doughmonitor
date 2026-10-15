@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <None Update="Fixtures\*.jpg" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\*.csv" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

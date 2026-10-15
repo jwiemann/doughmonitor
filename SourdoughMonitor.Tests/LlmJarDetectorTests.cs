@@ -184,13 +184,30 @@ public class LlmJarDetectorTests
         Assert.Equal(1, sceneChanges);
     }
 
-    private static readonly LlmOptions ThreeSamples = new() { SamplesPerCycle = 3 };
+    private static readonly LlmOptions ThreeSamples = new() { SamplesPerCycle = 3, MinGeometryFrames = 1 };
 
     private static LlmJarDetector Sampling(params string[] answers) => new(
         new VisionOptions { DebugSaveAnnotatedImages = false },
         ThreeSamples,
         new FakeClient(new Queue<string>(answers)),
         NullLogger<LlmJarDetector>.Instance);
+
+    [Fact]
+    public async Task FirstOutlines_AreNotReportedUntilTheGeometryWindowIsFilled()
+    {
+        var detector = new LlmJarDetector(
+            new VisionOptions { DebugSaveAnnotatedImages = false },
+            new LlmOptions { SamplesPerCycle = 1 },
+            new FakeClient(new Queue<string>([Json(500), Json(500), Json(500)])),
+            NullLogger<LlmJarDetector>.Instance);
+
+        for (var cycle = 0; cycle < 2; cycle++)
+        {
+            Assert.Null(await detector.MeasureAsync(Frame(40, 200), T0.AddMinutes(5 * cycle), null, CancellationToken.None));
+            Assert.Equal("geometry_warmup", detector.LastOutcome);
+        }
+        Assert.NotNull(await detector.MeasureAsync(Frame(40, 200), T0.AddMinutes(10), null, CancellationToken.None));
+    }
 
     [Fact]
     public async Task ThreeSamples_UseTheMedianLevelAndRecordTheSpread()

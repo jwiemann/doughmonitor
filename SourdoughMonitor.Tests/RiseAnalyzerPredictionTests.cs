@@ -11,7 +11,7 @@ public class RiseAnalyzerPredictionTests
 
     private const double BaselinePx = 104;
 
-    private static AnalysisOptions Options() => new() { StateFilePath = null };
+    private static AnalysisOptions Options() => new() { StateFilePath = null, MinRisePercentForForecast = 0 };
 
     private static LevelMeasurement AtRisePercent(DateTimeOffset time, double risePercent, double noisePx) =>
         new(time, 1000 - BaselinePx * (1 + risePercent / 100.0) - noisePx, 0, 1000);
