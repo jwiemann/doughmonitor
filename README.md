@@ -20,7 +20,7 @@ Monitor sourdough starter rise from Frigate camera snapshots, publish readings t
 | `sourdough_monitor_rise_rate` | `sensor` | Rise rate in % per hour |
 | `sourdough_monitor_predicted_peak_percent` | `sensor` | Predicted rise % at peak |
 | `sourdough_monitor_peak_eta` | `sensor` (timestamp) | Estimated time of peak |
-| `sourdough_monitor_target_eta` (+ `_low` / `_high`) | `sensor` (timestamp) | When the rise is expected to reach `target_rise_percent` (default 100 %, "doubled"); empty unless the dough is clearly rising |
+| `sourdough_monitor_target_rise_eta` (+ `_earliest` / `_latest`) | `sensor` (timestamp) | When the rise is expected to reach `target_rise_percent` (default 100 %, "doubled"); empty unless the dough is clearly rising |
 | `sourdough_monitor_peaked` | `binary_sensor` | ON when rise has peaked |
 | `sourdough_monitor_reset` | `button` | Button to reset the current session |
 | `sourdough_monitor_llm_cost_today` | `sensor` (USD, diagnostic) | Billed LLM cost today (UTC day) |

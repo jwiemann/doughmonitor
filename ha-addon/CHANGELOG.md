@@ -2,7 +2,7 @@
 
 ## 0.4.0
 
-- New sensor "Target Rise ETA" (`sourdough_monitor_target_eta`, with Earliest/Latest): when the rise
+- New sensor "Target Rise ETA" (`sensor.sourdough_monitor_target_rise_eta`, with Earliest/Latest): when the rise
   is expected to reach `target_rise_percent` (default 100 %, "doubled", the rule the dough is judged
   by; add-on option). It carries the trailing hour's linear trend forward and holds only while the
   dough clearly rises (>= 3 %/h and 2 standard errors) and is still short of the target; a peak

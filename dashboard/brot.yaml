@@ -1,4 +1,4 @@
-# Home Assistant view "Brot" (compact) for the Sourdough Monitor add-on 0.2.0.
+# Home Assistant view "Brot" (compact) for the Sourdough Monitor add-on 0.4.0.
 # Paste as one entry under `views:` in the dashboard's raw configuration editor.
 # Needs debug_enabled: true in the add-on options for the debug image and the spread tile.
 type: sections
@@ -44,6 +44,9 @@ sections:
         heading_style: title
         heading: Prognose
       - type: tile
+        entity: sensor.sourdough_monitor_target_rise_eta
+        name: Verdopplung (ETA)
+      - type: tile
         entity: sensor.sourdough_monitor_peak_eta
         name: Höhepunkt (ETA)
       - type: tile
@@ -78,6 +81,12 @@ sections:
             entity_id: button.sourdough_monitor_reset_session
           confirmation:
             text: Aktuelle Sitzung beenden und neu beginnen?
+      - type: tile
+        entity: switch.sourdough_monitor_llm_detection
+        name: KI-Erkennung
+        icon: mdi:robot
+        tap_action:
+          action: toggle
       - type: tile
         entity: sensor.timmerflotte_temp_hmd_sensor_temperatur_2
         name:
