@@ -127,6 +127,7 @@ public sealed class RiseAnalyzer
         double? peakRise = null;
         if (!_peaked && Publish(m.Time, forecast) is { } published)
             (eta, etaLow, etaHigh, peakRise) = (published.Point, published.Low, published.High, published.Rise);
+        var target = _peaked ? null : TargetCrossing(m.Time, forecast);
         SaveState();
         return new RiseReading(
             m.Time,
@@ -138,8 +139,63 @@ public sealed class RiseAnalyzer
             etaHigh,
             _peaked,
             NewSession: false,
-            SessionStart: _sessionStart);
+            SessionStart: _sessionStart,
+            TargetTime: target?.Eta,
+            TargetTimeLow: target?.Low,
+            TargetTimeHigh: target?.High);
     }
+
+    /// <summary>When the rise is expected to reach <see cref="AnalysisOptions.TargetRisePercent"/>:
+    /// the trailing hour's linear trend carried forward, because the dough rises almost linearly
+    /// (17-24 %/h) until it stops. Only while the rise is clearly under way and still short of the
+    /// target; the range is the slope's standard error (1.5×). A forecast that sees the rise
+    /// end below the target cancels it, one that ends sooner than the linear estimate caps it.</summary>
+    private TargetEstimate? TargetCrossing(DateTimeOffset now, RateForecast? forecast)
+    {
+        var target = _options.TargetRisePercent;
+        if (target <= 0 || _samples.Count < TargetMinReadings) return null;
+        var points = new List<(double X, double Y)>();
+        for (var i = _samples.Count - 1; i >= 0; i--)
+        {
+            var age = now - _samples[i].Time;
+            if (age.TotalMinutes > TargetWindowMinutes) break;
+            points.Add((-age.TotalHours, _samples[i].RawRisePercent ?? _samples[i].RisePercent));
+        }
+        if (points.Count < TargetMinReadings
+            || (points[0].X - points[^1].X) * 60 < TargetMinSpanMinutes) return null;
+        var n = points.Count;
+        var (mx, my) = (points.Average(p => p.X), points.Average(p => p.Y));
+        var sxx = points.Sum(p => (p.X - mx) * (p.X - mx));
+        if (sxx <= 0) return null;
+        var slope = points.Sum(p => (p.X - mx) * (p.Y - my)) / sxx;
+        var now0 = my - slope * mx; // the fitted rise now (x = 0)
+        var variance = points.Sum(p => Math.Pow(p.Y - (now0 + slope * p.X), 2)) / Math.Max(1, n - 2);
+        var standardError = Math.Sqrt(variance / sxx);
+        if (now0 >= target || slope < TargetMinRatePercentPerHour || slope < 2 * standardError) return null;
+        var remaining = target - now0;
+        var hours = remaining / slope;
+        var fastest = remaining / (slope + 1.5 * standardError);
+        var slowest = slope - 1.5 * standardError > slope / 3
+            ? remaining / (slope - 1.5 * standardError)
+            : hours * 3;
+        if (forecast is { } f)
+        {
+            if (f.PeakRisePercent < target - TargetMarginPercent) return null;
+            if (f.HoursToPeak > 0) (hours, slowest) = (Math.Min(hours, f.HoursToPeak), Math.Min(slowest, f.HoursToPeak));
+        }
+        if (hours > TargetMaxHours) return null;
+        var (eta, low, high) = (now.AddHours(hours), now.AddHours(Math.Min(fastest, hours)), now.AddHours(Math.Max(slowest, hours)));
+        return new TargetEstimate(eta, low, high);
+    }
+
+    private const double TargetWindowMinutes = 60;
+    private const int TargetMinReadings = 8;
+    private const double TargetMinSpanMinutes = 40;
+    private const double TargetMinRatePercentPerHour = 3;
+    private const double TargetMarginPercent = 3;
+    private const double TargetMaxHours = 8;
+
+    private sealed record TargetEstimate(DateTimeOffset Eta, DateTimeOffset Low, DateTimeOffset High);
 
     /// <summary>The forecast as published: the median of the forecasts of the last few cycles, so
     /// one noisy cycle does not make the ETA jump. A cycle whose fit is momentarily undetermined

@@ -42,6 +42,7 @@ export Monitor__Llm__SamplesPerCycle="$(jq -r '.llm_samples_per_cycle // 3' "$CO
 export Monitor__Llm__ReasoningEffort="$(jq -r '.llm_reasoning_effort // "off"' "$CONFIG_PATH")"
 export Monitor__Llm__DetectionModeFilePath="/data/detection_mode.txt"
 export Monitor__Llm__UsageFilePath="/data/llm_usage.json"
+export Monitor__Analysis__TargetRisePercent="$(jq -r '.target_rise_percent // 100' "$CONFIG_PATH")"
 
 # --- OpenCvSharp native libraries ---
 export LD_LIBRARY_PATH="/app/runtimes/linux-x64/native${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

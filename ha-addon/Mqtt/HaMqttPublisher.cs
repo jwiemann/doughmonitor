@@ -74,6 +74,9 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                 peak_eta = reading.PredictedPeakTime?.ToString("O"),
                 peak_eta_low = reading.PredictedPeakTimeLow?.ToString("O"),
                 peak_eta_high = reading.PredictedPeakTimeHigh?.ToString("O"),
+                target_eta = reading.TargetTime?.ToString("O"),
+                target_eta_low = reading.TargetTimeLow?.ToString("O"),
+                target_eta_high = reading.TargetTimeHigh?.ToString("O"),
                 peaked = reading.Peaked ? "ON" : "OFF",
                 new_session = reading.NewSession,
                 data_stale = "OFF",
@@ -98,6 +101,9 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                 peak_eta = (string?)null,
                 peak_eta_low = (string?)null,
                 peak_eta_high = (string?)null,
+                target_eta = (string?)null,
+                target_eta_low = (string?)null,
+                target_eta_high = (string?)null,
                 peaked = "OFF",
                 new_session = false,
                 data_stale = "ON",
@@ -258,6 +264,35 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             device,
             ct,
             deviceClass: "timestamp",
+            stateTopicOverride: StateTopic);
+        await PublishSensorConfigAsync(
+            "target_eta",
+            "Target Rise ETA",
+            null,
+            "{{ value_json.target_eta }}",
+            device,
+            ct,
+            deviceClass: "timestamp",
+            stateTopicOverride: StateTopic);
+        await PublishSensorConfigAsync(
+            "target_eta_low",
+            "Target Rise ETA Earliest",
+            null,
+            "{{ value_json.target_eta_low }}",
+            device,
+            ct,
+            deviceClass: "timestamp",
+            entityCategory: "diagnostic",
+            stateTopicOverride: StateTopic);
+        await PublishSensorConfigAsync(
+            "target_eta_high",
+            "Target Rise ETA Latest",
+            null,
+            "{{ value_json.target_eta_high }}",
+            device,
+            ct,
+            deviceClass: "timestamp",
+            entityCategory: "diagnostic",
             stateTopicOverride: StateTopic);
         await PublishSensorConfigAsync(
             "last_update",

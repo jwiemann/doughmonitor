@@ -175,4 +175,46 @@ public class RiseAnalyzerForecastTests
         Assert.InRange(firstEta.PredictedPeakPercent!.Value, 50, 70);
         Assert.True(peaked.Time <= Utc(16, 1, 30), $"peaked at {peaked.Time:t}");
     }
+
+    /// <summary>2026-10-15: the bake build (80 g flour + 80 g water + 8 g starter) rose at 17-22 %/h
+    /// and was used at +100 % ("doubled") 7.3 h after the feed, still rising. The doubling time must
+    /// be announced hours ahead and hold within minutes, since that rise is the rule the dough is
+    /// judged by.</summary>
+    [Fact]
+    public void BakeBuild_AnnouncesTheDoublingAccuratelyHoursAhead()
+    {
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null });
+        var readings = new List<RiseReading>();
+        foreach (var line in File.ReadLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "rise_2026-10-15_bake-build.csv")))
+        {
+            var fields = line.Split(',');
+            var measurement = new LevelMeasurement(
+                DateTimeOffset.Parse(fields[0], CultureInfo.InvariantCulture),
+                double.Parse(fields[1], CultureInfo.InvariantCulture), 0,
+                double.Parse(fields[2], CultureInfo.InvariantCulture));
+            if (analyzer.Analyze(measurement) is { } reading && !reading.NewSession) readings.Add(reading);
+        }
+
+        var doubled = readings.First(r => r.RisePercent >= 100).Time;
+        var announced = readings.Where(r => r.TargetTime is not null && r.Time >= new DateTimeOffset(2026, 10, 15, 17, 0, 0, TimeSpan.Zero)
+                                            && r.Time < doubled).ToList();
+        Assert.True(announced.Count >= 20, $"only {announced.Count} readings announce the doubling");
+        Assert.All(announced, r => Assert.InRange((r.TargetTime!.Value - doubled).TotalMinutes, -35, 35));
+        var errors = announced.Select(r => Math.Abs((r.TargetTime!.Value - doubled).TotalMinutes)).Order().ToList();
+        Assert.InRange(errors[errors.Count / 2], 0, 20); // median error (measured: 15 min)
+        Assert.All(announced, r => Assert.True(r.TargetTimeLow <= r.TargetTime && r.TargetTime <= r.TargetTimeHigh));
+        Assert.All(readings.Where(r => r.Time >= doubled), r => Assert.Null(r.TargetTime));
+    }
+
+    [Fact]
+    public void TargetEta_StaysEmptyWhileTheDoughDoesNotRise()
+    {
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null });
+        for (var step = 0; step <= 40; step++)
+        {
+            var noise = (step * 7 % 5 - 2) * 0.6;
+            var reading = analyzer.Analyze(new LevelMeasurement(Start.AddMinutes(5 * step), 300 + noise, 0, 400));
+            Assert.Null(reading!.TargetTime);
+        }
+    }
 }

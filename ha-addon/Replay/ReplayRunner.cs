@@ -496,6 +496,7 @@ public static class ReplayRunner
         MinRisePercentForPeak = src.MinRisePercentForPeak,
         MinRisePercentForForecast = src.MinRisePercentForForecast,
         BaselineSettleMinutes = src.BaselineSettleMinutes,
+        TargetRisePercent = src.TargetRisePercent,
         MinSlopeEvidenceSigmas = src.MinSlopeEvidenceSigmas,
         MaxRisePercentPerHour = src.MaxRisePercentPerHour,
         MaxFallPercentPerHour = src.MaxFallPercentPerHour,

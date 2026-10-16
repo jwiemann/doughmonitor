@@ -52,6 +52,11 @@ public sealed class AnalysisOptions
     /// readings so far instead of the first reading alone.</summary>
     public double BaselineSettleMinutes { get; init; } = 20;
 
+    /// <summary>The rise (%) the user acts on: "doubled" (100 %) is the rule for judging the dough
+    /// ready (daily feed 30 g flour + 30 ml water + 3 g starter, bake build 80 + 80 + 8 g). The
+    /// analyzer publishes when the rise is expected to reach it. 0 disables it.</summary>
+    public double TargetRisePercent { get; init; } = 100;
+
     /// <summary>A peak or forecast requires the session's maximum rate to reach this many
     /// times <see cref="MaxRateStdErrPercentPerHour"/>: evidence that the dough really rose.</summary>
     public double MinSlopeEvidenceSigmas { get; init; } = 2.0;

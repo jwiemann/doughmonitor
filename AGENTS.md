@@ -27,6 +27,7 @@
 ## Important areas
 
 - Detection: the vision-LLM detector [ha-addon/Vision/LlmJarDetector.cs](ha-addon/Vision/LlmJarDetector.cs) (prompt, parsing and validation in `LlmAnnotation.cs`, OpenRouter client in `ha-addon/Services`) or the classic `JarLevelDetector`, chosen at runtime by the HA switch "LLM Detection" (`SwitchableDetector`, both implement `IJarDetector`). Jens tunes the classic one while the LLM one is the fallback for critical moments; the notes below describe the classic one.
+- Dough domain (Jens, 2026-10-16): daily refeed replaces the dough with 30 g spelt wholemeal flour + 30 ml warm water + 3 g previous sourdough; a bake build is 80 g water + 80 g flour + 8 g sourdough (same 1:10:10 ratio, 2.7x the start volume: baseline height about 103-115 px vs about 270 px). He judges the dough ready when it has doubled (+100 %). Measured: rise is almost linear at 17-24 %/h and stops abruptly; peak rise varied (+125 % after 10 h on 10-14, about +75 % on 10-13, +60 % after 3.4 h on the 10-15 night), so only the doubling time can be predicted hours ahead (`TargetCrossing`), the peak itself 40-70 min ahead.
 - Growth analysis lives in [Analysis](Analysis).
 - Tests live in [SourdoughMonitor.Tests](SourdoughMonitor.Tests).
 

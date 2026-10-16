@@ -10,4 +10,7 @@ public sealed record RiseReading(
     DateTimeOffset? PredictedPeakTimeHigh,
     bool Peaked,
     bool NewSession,
-    DateTimeOffset? SessionStart = null);
+    DateTimeOffset? SessionStart = null,
+    DateTimeOffset? TargetTime = null,
+    DateTimeOffset? TargetTimeLow = null,
+    DateTimeOffset? TargetTimeHigh = null);

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0
+
+- New sensor "Target Rise ETA" (`sourdough_monitor_target_eta`, with Earliest/Latest): when the rise
+  is expected to reach `target_rise_percent` (default 100 %, "doubled", the rule the dough is judged
+  by; add-on option). It carries the trailing hour's linear trend forward and holds only while the
+  dough clearly rises (>= 3 %/h and 2 standard errors) and is still short of the target; a peak
+  forecast ending below the target cancels it and one ending sooner caps it. On the bake build of
+  2026-10-15 (used at +100 % after 7.3 h) it announced the doubling 2.5 h ahead with a median error
+  of 15 min (35 min worst case in the last 2.5 h), 3.5 h ahead off by 47 min. Replay output is
+  unchanged.
+- Why: the peak itself stops abruptly and so can only be forecast 40-70 min ahead, but the rise to
+  +100 % is linear and predictable hours ahead. The 2026-10-15 session had no ETA of any kind.
+
 ## 0.3.1
 
 - Fix: on 2026-10-15/16 the peak ETA, expected height and range stayed empty although the dough

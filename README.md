@@ -20,6 +20,7 @@ Monitor sourdough starter rise from Frigate camera snapshots, publish readings t
 | `sourdough_monitor_rise_rate` | `sensor` | Rise rate in % per hour |
 | `sourdough_monitor_predicted_peak_percent` | `sensor` | Predicted rise % at peak |
 | `sourdough_monitor_peak_eta` | `sensor` (timestamp) | Estimated time of peak |
+| `sourdough_monitor_target_eta` (+ `_low` / `_high`) | `sensor` (timestamp) | When the rise is expected to reach `target_rise_percent` (default 100 %, "doubled"); empty unless the dough is clearly rising |
 | `sourdough_monitor_peaked` | `binary_sensor` | ON when rise has peaked |
 | `sourdough_monitor_reset` | `button` | Button to reset the current session |
 | `sourdough_monitor_llm_cost_today` | `sensor` (USD, diagnostic) | Billed LLM cost today (UTC day) |
@@ -248,6 +249,7 @@ active the `llm_model` sensor shows `classic` and no calls are billed.
 | `llm_max_calls_per_day` | Hard cap on API calls per UTC day (default 4500 = 3 samples per minute) |
 | `llm_samples_per_cycle` | Independent draws per frame; the median level is used (default 3, 1 = off) |
 | `llm_reasoning_effort` | `off` (default, cheapest) or `minimal`/`low`/...; a model whose reasoning is mandatory (`google/gemini-3.8-flash`) is switched from `off` to `minimal` automatically |
+| `target_rise_percent` | Rise (%) the "Target Rise ETA" sensor counts down to (default 100 = doubled, 0 = off) |
 
 Per cycle: the frame is gated (`Vision:MinFrameIntensity`, P90 of the gray levels; contrast is not
 gated), cropped to `Vision:RoiX/RoiY/RoiWidth/RoiHeight` when set, scaled to
