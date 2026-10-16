@@ -40,6 +40,7 @@ export Monitor__Llm__Model="$(jq -r '.llm_model // "google/gemini-3-flash-previe
 export Monitor__Llm__MaxCallsPerDay="$(jq -r '.llm_max_calls_per_day // 4500' "$CONFIG_PATH")"
 export Monitor__Llm__SamplesPerCycle="$(jq -r '.llm_samples_per_cycle // 3' "$CONFIG_PATH")"
 export Monitor__Llm__ReasoningEffort="$(jq -r '.llm_reasoning_effort // "off"' "$CONFIG_PATH")"
+export Monitor__Llm__DetectionModeFilePath="/data/detection_mode.txt"
 export Monitor__Llm__UsageFilePath="/data/llm_usage.json"
 
 # --- OpenCvSharp native libraries ---

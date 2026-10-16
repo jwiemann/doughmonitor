@@ -47,6 +47,11 @@ public sealed class LlmOptions
     /// restarts. In the add-on this is under /data. Null keeps them in memory only.</summary>
     public string? UsageFilePath { get; init; }
 
+    /// <summary>File remembering the Home Assistant "LLM Detection" switch ("llm" or "classic") so
+    /// it survives restarts. In the add-on this is under /data. Null keeps it in memory only; with
+    /// no file yet the LLM detector is used.</summary>
+    public string? DetectionModeFilePath { get; init; }
+
     public double RequestTimeoutSeconds { get; init; } = 60;
 
     /// <summary>Retries after the first attempt for 429, 5xx and timeouts.</summary>

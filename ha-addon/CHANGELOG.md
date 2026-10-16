@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0
+
+- New Home Assistant switch "LLM Detection" (`switch.sourdough_monitor_llm_detection`, MQTT
+  discovery, retained state): ON uses the vision LLM, OFF the classic image-pattern detector, at
+  runtime and without a restart. The choice persists in `/data/detection_mode.txt`; with no file
+  the LLM is used. This re-wires `JarLevelDetector` (new `IJarDetector`, `SwitchableDetector`).
+- Both detectors feed one rise session on the glass-bottom basis: the classic detector's dough
+  floor is dropped in the live path, and after a switch the new detector's jar bottom is replaced
+  by the bottom the session was measured with (cleared by a camera move). Replay is unchanged
+  (LLM only).
+- The `llm_model` sensor reads `classic` while the classic detector is active.
+
 ## 0.2.5
 
 - Fix: with a configured `llm_model` of `google/gemini-3.8-flash` (or any model whose reasoning is

@@ -26,7 +26,7 @@
 
 ## Important areas
 
-- Detection is the vision-LLM detector in [ha-addon/Vision/LlmJarDetector.cs](ha-addon/Vision/LlmJarDetector.cs) (prompt, parsing and validation in `LlmAnnotation.cs`, OpenRouter client in `ha-addon/Services`). The classic `JarLevelDetector` is disabled (not wired), kept for reference; the notes below describe it.
+- Detection: the vision-LLM detector [ha-addon/Vision/LlmJarDetector.cs](ha-addon/Vision/LlmJarDetector.cs) (prompt, parsing and validation in `LlmAnnotation.cs`, OpenRouter client in `ha-addon/Services`) or the classic `JarLevelDetector`, chosen at runtime by the HA switch "LLM Detection" (`SwitchableDetector`, both implement `IJarDetector`). Jens tunes the classic one while the LLM one is the fallback for critical moments; the notes below describe the classic one.
 - Growth analysis lives in [Analysis](Analysis).
 - Tests live in [SourdoughMonitor.Tests](SourdoughMonitor.Tests).
 

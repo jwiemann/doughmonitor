@@ -43,6 +43,11 @@ builder.Services.AddSingleton(options.Llm);
 builder.Services.AddHttpClient<FrigateSnapshotClient>();
 builder.Services.AddHttpClient<IVisionLlmClient, OpenRouterClient>();
 builder.Services.AddSingleton<LlmJarDetector>();
+builder.Services.AddSingleton<JarLevelDetector>();
+builder.Services.AddSingleton(sp => new SwitchableDetector(
+    sp.GetRequiredService<JarLevelDetector>(),
+    sp.GetRequiredService<LlmJarDetector>(),
+    options.Llm.DetectionModeFilePath));
 builder.Services.AddSingleton<RiseAnalyzer>();
 builder.Services.AddSingleton<HaMqttPublisher>();
 builder.Services.AddHostedService<Worker>();

@@ -13,14 +13,14 @@ namespace SourdoughMonitor.Vision;
 /// <summary>Dough-level detector that asks a vision LLM to mark the whole jar outline and the
 /// front dough surface as points, then computes the level from those points. The frame is
 /// gated for darkness, cropped to the configured ROI and downscaled before upload to keep the
-/// cost per call low. Replaces the classic <see cref="JarLevelDetector"/> in the live path;
-/// that detector is kept in the repository but is not wired.
+/// cost per call low. Alternative to the classic <see cref="JarLevelDetector"/>; the Home
+/// Assistant "LLM Detection" switch chooses between them at runtime (<see cref="SwitchableDetector"/>).
 /// All reported coordinates are full-frame pixels of the first frame size seen.</summary>
 public sealed class LlmJarDetector(
     VisionOptions vision,
     LlmOptions llm,
     IVisionLlmClient client,
-    ILogger<LlmJarDetector> logger)
+    ILogger<LlmJarDetector> logger) : IJarDetector
 {
     private (int Width, int Height)? _reference;
 

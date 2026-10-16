@@ -231,8 +231,15 @@ boundary evidence still returns no measurement rather than inventing a surface.
 
 ## Vision LLM detector
 
-Detection runs through a vision model on OpenRouter; the classic computer-vision detector
-(`JarLevelDetector`) is disabled but still in the repository.
+Detection runs through a vision model on OpenRouter or, switched at runtime, through the classic
+computer-vision detector (`JarLevelDetector`, no API cost). The Home Assistant switch
+`sourdough_monitor_llm_detection` ("LLM Detection") chooses: ON = LLM, OFF = classic. The choice
+is kept in `/data/detection_mode.txt` (default: LLM). Both feed the same rise session: the
+classic detector's dough floor is dropped so both measure from the glass bottom, and after a
+switch the new detector keeps the jar bottom the session was measured with (until a camera
+move), so flipping the switch does not shift the rise percentage. A different dough level from
+the other detector still goes through the plausibility gate. While the classic detector is
+active the `llm_model` sensor shows `classic` and no calls are billed.
 
 | Option | Meaning |
 |---|---|

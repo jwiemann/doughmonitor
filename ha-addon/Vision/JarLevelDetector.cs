@@ -7,13 +7,14 @@ using SourdoughMonitor.Config;
 
 namespace SourdoughMonitor.Vision;
 
-/// <summary>DISABLED: not wired into the add-on or the replay CLI since the vision-LLM detector
-/// (<see cref="LlmJarDetector"/>) took over. Kept for reference and its tests; do not add callers.
+/// <summary>The classic image-pattern detector, the alternative to the vision-LLM detector
+/// (<see cref="LlmJarDetector"/>): free to run and the one to tune, switched on at runtime by the
+/// Home Assistant "LLM Detection" switch (<see cref="SwitchableDetector"/>).
 /// Locates a measurement column from a backlit glass foot or the dough's
 /// ambient-light extent, then traces the lower-connected content boundary. The drawn
 /// curve and reported surface share one basis. Geometry is held across lighting
 /// changes and invalidated when the camera's coordinate system changes.</summary>
-public sealed class JarLevelDetector(VisionOptions options)
+public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
 {
     /// <summary>Minimum mean-gray-level contrast between the region directly above a dark band
     /// and the band interior for the band to be trusted over the edge-energy method. Without
@@ -301,6 +302,10 @@ public sealed class JarLevelDetector(VisionOptions options)
             ? measurement
             : measurement with { JarBottomPx = held };
     }
+
+    public Task<LevelMeasurement?> MeasureAsync(
+        byte[] jpegBytes, DateTimeOffset now, double? sessionBaselineHeightPx, CancellationToken ct) =>
+        Task.FromResult(Measure(jpegBytes, now, sessionBaselineHeightPx));
 
     /// <summary>Measures the dough level. <paramref name="sessionBaselineHeightPx"/>, when
     /// supplied, is the dough height (JarBottomPx - DoughTopPx) recorded at the start of the

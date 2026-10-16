@@ -29,7 +29,14 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
 
     private string LlmUsageTopic => $"{options.DeviceId}/llm_usage";
 
+    public string LlmDetectionCommandTopic => $"{options.DeviceId}/cmd/llm_detection";
+
+    private string LlmDetectionStateTopic => $"{options.DeviceId}/llm_detection";
+
     public event Func<Task>? ResetRequested;
+
+    /// <summary>Raised when the "LLM Detection" switch is flipped in Home Assistant; true = LLM.</summary>
+    public event Func<bool, Task>? LlmDetectionRequested;
 
     public async Task ConnectAsync(CancellationToken ct)
     {
@@ -42,11 +49,16 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             builder = builder.WithCredentials(options.Username, options.Password);
         _client.ApplicationMessageReceivedAsync += async e =>
         {
-            if (e.ApplicationMessage.Topic == ResetCommandTopic && ResetRequested is not null)
+            var topic = e.ApplicationMessage.Topic;
+            if (topic == ResetCommandTopic && ResetRequested is not null)
                 await ResetRequested();
+            else if (topic == LlmDetectionCommandTopic && LlmDetectionRequested is not null
+                     && ParseSwitchPayload(e.ApplicationMessage.ConvertPayloadToString()) is { } enabled)
+                await LlmDetectionRequested(enabled);
         };
         await _client.ConnectAsync(builder.Build(), ct);
         await _client.SubscribeAsync(ResetCommandTopic, cancellationToken: ct);
+        await _client.SubscribeAsync(LlmDetectionCommandTopic, cancellationToken: ct);
         await PublishAsync(AvailabilityTopic, "online", retain: true, ct);
         await PublishDiscoveryAsync(ct);
     }
@@ -135,6 +147,17 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                 JsonOpts),
             retain: true,
             ct);
+
+    /// <summary>Publishes which detector is active, as the state of the "LLM Detection" switch.</summary>
+    public Task PublishLlmDetectionStateAsync(bool llmEnabled, CancellationToken ct) =>
+        PublishAsync(LlmDetectionStateTopic, llmEnabled ? "ON" : "OFF", retain: true, ct);
+
+    public static bool? ParseSwitchPayload(string? payload) => payload?.Trim().ToUpperInvariant() switch
+    {
+        "ON" => true,
+        "OFF" => false,
+        _ => null
+    };
 
     public async Task PublishDebugImageAsync(byte[] jpegBytes, CancellationToken ct)
     {
@@ -303,6 +326,27 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
         await PublishAsync(
             $"{options.DiscoveryPrefix}/button/{options.DeviceId}/reset/config",
             buttonConfig,
+            retain: true,
+            ct);
+        var llmSwitchConfig = JsonSerializer.Serialize(
+            new
+            {
+                name = "LLM Detection",
+                unique_id = $"{options.DeviceId}_llm_detection",
+                command_topic = LlmDetectionCommandTopic,
+                state_topic = LlmDetectionStateTopic,
+                payload_on = "ON",
+                payload_off = "OFF",
+                state_on = "ON",
+                state_off = "OFF",
+                icon = "mdi:robot",
+                availability_topic = AvailabilityTopic,
+                device
+            },
+            JsonOpts);
+        await PublishAsync(
+            $"{options.DiscoveryPrefix}/switch/{options.DeviceId}/llm_detection/config",
+            llmSwitchConfig,
             retain: true,
             ct);
         await PublishSensorConfigAsync(

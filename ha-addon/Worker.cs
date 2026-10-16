@@ -8,7 +8,8 @@ namespace SourdoughMonitor;
 
 public sealed class Worker(
     FrigateSnapshotClient frigate,
-    LlmJarDetector detector,
+    SwitchableDetector detector,
+    LlmJarDetector llmDetector,
     RiseAnalyzer analyzer,
     HaMqttPublisher mqtt,
     MonitorOptions options,
@@ -33,6 +34,13 @@ public sealed class Worker(
             await PublishSessionEndAsync(ct);
             await TrackPublishedAsync(reading, ct);
         };
+        mqtt.LlmDetectionRequested += async enabled =>
+        {
+            if (detector.LlmEnabled != enabled)
+                logger.LogInformation("Detection switched to {Detector} via MQTT", enabled ? "vision LLM" : "classic image analysis");
+            detector.LlmEnabled = enabled;
+            await mqtt.PublishLlmDetectionStateAsync(enabled, ct);
+        };
         // Geometry changes invalidate the pixel-height baseline. The detector verifies
         // the new jar/base/surface; lighting and sampling-resolution changes retain it.
         detector.SceneChanged += () =>
@@ -52,6 +60,14 @@ public sealed class Worker(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "MQTT connect failed; continuing without MQTT updates");
+        }
+        try
+        {
+            await mqtt.PublishLlmDetectionStateAsync(detector.LlmEnabled, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not publish the LLM detection switch state");
         }
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(options.Frigate.SampleIntervalMinutes));
         do
@@ -81,7 +97,8 @@ public sealed class Worker(
         try
         {
             await mqtt.PublishLlmUsageAsync(
-                detector.Usage.Snapshot(DateOnly.FromDateTime(DateTime.UtcNow)), options.Llm.Model, ct);
+                llmDetector.Usage.Snapshot(DateOnly.FromDateTime(DateTime.UtcNow)),
+                detector.LlmEnabled ? options.Llm.Model : "classic", ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
