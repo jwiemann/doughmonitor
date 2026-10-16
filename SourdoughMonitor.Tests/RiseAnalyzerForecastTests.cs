@@ -138,4 +138,41 @@ public class RiseAnalyzerForecastTests
 
         Assert.Contains(readings, r => r.Peaked);
     }
+
+    /// <summary>The evening re-feed of 2026-10-15 peaked at only 60 % (the earlier prior of a 70 %
+    /// minimum rise left it without any forecast) and the rise stopped abruptly at about 23:30 UTC.
+    /// The ETA must exist from the turn on and must not vanish once the stop is seen, up to the
+    /// "peaked" flag 1.5 h later.</summary>
+    [Fact]
+    public void EveningRefeedPeakingAt60Percent_KeepsAnEtaUntilPeaked()
+    {
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null });
+        var readings = new List<RiseReading>();
+        foreach (var line in File.ReadLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "rise_2026-10-15_evening-refeed.csv")))
+        {
+            var fields = line.Split(',');
+            var measurement = new LevelMeasurement(
+                DateTimeOffset.Parse(fields[0], CultureInfo.InvariantCulture),
+                double.Parse(fields[1], CultureInfo.InvariantCulture), 0,
+                double.Parse(fields[2], CultureInfo.InvariantCulture));
+            if (analyzer.Analyze(measurement) is { } reading && !reading.NewSession) readings.Add(reading);
+        }
+
+        static DateTimeOffset Utc(int day, int hour, int minute) => new(2026, 10, day, hour, minute, 0, TimeSpan.Zero);
+
+        // Nothing while the rise is steady.
+        Assert.All(readings.Where(r => r.Time < Utc(15, 23, 30)), r => Assert.Null(r.PredictedPeakTime));
+
+        // From the turn until the "peaked" flag every cycle shows an ETA near the real stop.
+        var firstEta = readings.First(r => r.PredictedPeakTime is not null);
+        Assert.True(firstEta.Time <= Utc(15, 23, 55), $"first ETA at {firstEta.Time:t}");
+        var peaked = readings.First(r => r.Peaked);
+        var between = readings.Where(r => r.Time >= Utc(15, 23, 55) && r.Time < peaked.Time && !r.Peaked).ToList();
+        Assert.NotEmpty(between);
+        Assert.All(between, r => Assert.NotNull(r.PredictedPeakTime));
+        Assert.All(readings.Where(r => r.PredictedPeakTime is not null),
+            r => Assert.InRange(r.PredictedPeakTime!.Value, Utc(15, 23, 30), Utc(16, 0, 45)));
+        Assert.InRange(firstEta.PredictedPeakPercent!.Value, 50, 70);
+        Assert.True(peaked.Time <= Utc(16, 1, 30), $"peaked at {peaked.Time:t}");
+    }
 }

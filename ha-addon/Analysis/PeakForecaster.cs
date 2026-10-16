@@ -70,6 +70,11 @@ public static class PeakForecaster
 
     private readonly record struct Cell(double Hours, double Rise, double Sse, double Moment);
 
+    /// <summary>The fitted peak: ahead of now while the rise is still turning, or already behind
+    /// (<see cref="RateForecast.HoursToPeak"/> at or below zero) once the rise has stopped. The
+    /// rate-based "peaked" rule needs its slope window to flatten, 1.5 h after the stop on
+    /// 2026-10-15; until then the fit's estimate of when and at what rise the dough stopped is the
+    /// answer, instead of an empty sensor.</summary>
     public static RateForecast? TryForecast(
         IReadOnlyList<Sample> samples, DateTimeOffset now, double noiseFloorPercent, bool continuing)
     {
@@ -103,16 +108,29 @@ public static class PeakForecaster
         var pastMass = 0.0;
         for (var i = 0; i < cells.Count; i++)
             if (cells[i].Moment <= -MomentPastHours) pastMass += widened[i];
+        var pastProbability = pastMass / widened.Sum();
         // The rate has not demonstrably fallen yet: its maximum could still lie ahead.
-        if (pastMass < (continuing ? ContinuePastProbability : StartPastProbability) * widened.Sum()) return null;
-        // The peak lies behind us: the rise has already stopped, that is not a forecast.
-        if (pointHours <= 0.05) return null;
+        if (pastProbability < (continuing ? ContinuePastProbability : StartPastProbability)) return null;
         var (low, high) = (Math.Min(hoursRange.Low, pointHours), Math.Max(hoursRange.High, pointHours));
         if (high > MaxHoursToPeak || high - low > (continuing ? ContinueRangeHours : StartRangeHours)) return null;
-        return new RateForecast(
-            pointHours, Math.Max(0, low), high,
-            pointRise, Math.Min(risesRange.Low, pointRise), Math.Max(risesRange.High, pointRise));
+        var riseLow = Math.Min(risesRange.Low, pointRise);
+        var riseHigh = Math.Max(risesRange.High, pointRise);
+        // Behind us the fit is only stated for a forecast already running: the turn was seen
+        // coming, and the rise now confirms it stopped. On its own a flat or creeping stretch
+        // (2.6 %/h for 2.5 h on 2026-10-14) fits "stopped" just as well and would publish a false
+        // peak. It must also be certain the rate is gone.
+        if (pointHours <= 0.05)
+            return continuing && pastProbability >= PeakBehindProbability && high <= PeakBehindRangeHours
+                ? new RateForecast(pointHours, low, high, pointRise, riseLow, riseHigh)
+                : null;
+        return new RateForecast(pointHours, Math.Max(0, low), high, pointRise, riseLow, riseHigh);
     }
+
+    /// <summary>Share of the models (by weight) whose rate maximum lies past, and the latest the
+    /// peak may lie ahead, for the fit to state a peak that is already behind us.</summary>
+    private const double PeakBehindProbability = 0.95;
+
+    private const double PeakBehindRangeHours = 1.0;
 
     /// <summary>Least-squares fit of the rate model for a fixed rate-maximum time
     /// <paramref name="momentHours"/> and decline duration <paramref name="declineHours"/> (both

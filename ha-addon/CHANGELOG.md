@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.1
+
+- Fix: on 2026-10-15/16 the peak ETA, expected height and range stayed empty although the dough
+  peaked at 23:30 UTC (60 % rise). Cause: 0.2.4's forecast minimum of 70 % rise (a prior taken
+  from two sessions peaking at 125 %); the evening re-feed peaked at only 60 %. The minimum
+  (`Analysis:MinRisePercentForForecast`) is now 30 %: it still blocks the early stall of 2026-10-14
+  (19 %), nothing above. A stall at 50 % can again produce a short-lived false ETA.
+- The ETA no longer disappears when the rise has stopped: once a published forecast sees the
+  rate gone (95 % of the fit, range within 1 h) it keeps stating the fitted peak time (now in the
+  past) and rise, until the rate-based "peaked" flag follows (1.5 h after the stop on 2026-10-15,
+  with an empty sensor in between). It only continues a running forecast, so a flat or creeping
+  stretch cannot start it (2.6 %/h for 2.5 h on 2026-10-14 would have).
+- The plausibility gate dropped 10 genuine readings during the fast rise of 2026-10-15 (steps of
+  5-17 px, 9 px tolerance); `Analysis:OutlierTolerancePx` is 12 now. The two misdetections of
+  2026-10-14 (20 px off) are still rejected.
+
 ## 0.3.0
 
 - New Home Assistant switch "LLM Detection" (`switch.sourdough_monitor_llm_detection`, MQTT

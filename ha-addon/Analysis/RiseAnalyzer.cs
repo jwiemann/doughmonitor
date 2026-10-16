@@ -153,8 +153,10 @@ public sealed class RiseAnalyzer
             _recentForecasts.Add(new PublishedForecast(
                 now, now.AddHours(forecast.HoursToPeak), now.AddHours(forecast.HoursLow),
                 now.AddHours(forecast.HoursHigh), forecast.PeakRisePercent));
+        // A fresh forecast may state a peak that already lies behind us; a held one only counts
+        // while its ETA still lies ahead.
         var window = _recentForecasts
-            .Where(f => (now - f.Time).TotalMinutes <= ForecastSmoothingMinutes && f.Eta > now)
+            .Where(f => (now - f.Time).TotalMinutes <= ForecastSmoothingMinutes && (forecast is not null || f.Eta > now))
             .ToList();
         if (window.Count == 0 || (forecast is null && (now - window[^1].Time).TotalMinutes > HoldMinutes))
             return null;
@@ -337,7 +339,7 @@ public sealed class RiseAnalyzer
         for (var i = _slopes.Count - count; i < _slopes.Count; i++)
             if (_slopes[i].Slope > _options.FlatSlopePercentPerHour) return;
         _peaked = true;
-        _peakReferenceRisePercent = maxRise;
+        _peakReferenceRisePercent = _samples.Max(s => s.RisePercent);
     }
 
     /// <summary>Revokes a peak only after confirmed positive slopes and current growth

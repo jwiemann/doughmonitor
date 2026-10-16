@@ -41,13 +41,12 @@ public sealed class AnalysisOptions
     /// have happened), so small but real rises (e.g. a kept starter) still get a forecast.</summary>
     public double MinRisePercentForPeak { get; init; } = 5;
 
-    /// <summary>Domain prior: the daily-fed jar rises by 100-130 % before it peaks (measured
-    /// 2026-10-13 and 10-14). A forecast needs at least this much rise: below it a mid-rise stall
-    /// (19 % for 45 minutes and 53 % for 20 minutes on 2026-10-14) is indistinguishable from a turn
-    /// and produced ETAs hours too early. The real turn comes at 100 % or more, so a gate at 70 %
-    /// costs no forecast. A peak the rate itself confirms (<see cref="MinRisePercentForPeak"/>) is
-    /// not affected: a weak session still ends with "peaked", only without a forecast.</summary>
-    public double MinRisePercentForForecast { get; init; } = 70;
+    /// <summary>Minimum rise (%) before a forecast is published. A stall early in the rise (19 % for
+    /// 45 minutes on 2026-10-14) looks like a turn and produced ETAs hours too early, so trivial
+    /// rises never forecast. Keep it low: the evening re-feed of 2026-10-15 peaked at only 60 %, and
+    /// a gate of 70 % (an earlier version) left that session without any forecast. A peak the rate
+    /// itself confirms (<see cref="MinRisePercentForPeak"/>) is not affected.</summary>
+    public double MinRisePercentForForecast { get; init; } = 30;
 
     /// <summary>Minutes after a session's start during which its baseline is the median of the
     /// readings so far instead of the first reading alone.</summary>
@@ -67,9 +66,9 @@ public sealed class AnalysisOptions
 
     /// <summary>Smallest deviation (px) from the expected level at which a raw reading is rejected
     /// outright as a misdetection (camera glitch, model error); three times the scatter of the
-    /// recent readings if that is larger. A cycle's reading scatters by about 3 px, three
-    /// times that is 9 px.</summary>
-    public double OutlierTolerancePx { get; init; } = 9.0;
+    /// recent readings if that is larger. At 9 px the gate dropped 10 genuine readings of the
+    /// fast rise on 2026-10-15 (steps of 5-17 px); the misdetections it exists for sit 20 px off.</summary>
+    public double OutlierTolerancePx { get; init; } = 12.0;
 
     /// <summary>Allowance (px) of the peak revocation: growth beyond the remembered peak by more
     /// than this is needed to un-peak.</summary>
