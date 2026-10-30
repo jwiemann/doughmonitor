@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1
+
+- Dashboard: target ETA tile and LLM detection switch; fix entity ids in docs
+- Classic detector: IR night scene with a lamp behind the jar (dough = dark mass between the lamp glow and the
+  saturated glass foot) is now measured (`dark_mass` method, dough floor held as a 12-frame median). Before, the
+  glow path took the foot for the light source, lost the surface and the stale continuity fallback latched onto
+  the glass base (rise stuck at 0 %). Light-source candidates are now tried largest first, and a failed glow
+  path no longer ends the cycle but falls through to the dark-extent search.
+- Replay: `--classic` replays the image-pattern detector (no LLM calls).
+
 ## 0.4.0
 
 - New sensor "Target Rise ETA" (`sensor.sourdough_monitor_target_rise_eta`, with Earliest/Latest): when the rise

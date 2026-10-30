@@ -31,6 +31,7 @@ public static class ReplayRunner
         double? intervalMinutes = null;
         var utcTimestamps = false;
         var noDebugImages = false;
+        var classic = false;
         for (var i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -58,6 +59,9 @@ public static class ReplayRunner
                     break;
                 case "--timestamps-utc":
                     utcTimestamps = true;
+                    break;
+                case "--classic":
+                    classic = true;
                     break;
                 case "--no-debug-images":
                     noDebugImages = true;
@@ -150,8 +154,12 @@ public static class ReplayRunner
         var llmClient = new CachingLlmClient(
             new OpenRouterClient(new HttpClient(), llmOptions),
             Path.GetFullPath(llmCacheArg ?? "llm-cache"));
-        var detector = new LlmJarDetector(
-            visionOptions, llmOptions, llmClient, NullLogger<LlmJarDetector>.Instance);
+        var llmDetector = classic
+            ? null
+            : new LlmJarDetector(visionOptions, llmOptions, llmClient, NullLogger<LlmJarDetector>.Instance);
+        // --classic replays the image-pattern detector (no LLM calls, no cost).
+        var classicDetector = classic ? new JarLevelDetector(visionOptions) : null;
+        IJarDetector detector = (IJarDetector?)llmDetector ?? classicDetector!;
         var riseAnalyzer = new RiseAnalyzer(BuildReplayAnalysisOptions(options.Analysis));
         var warnings = new List<string>();
         // Mirror the live Worker: a camera move mid-replay invalidates the rise baseline.
@@ -184,7 +192,7 @@ public static class ReplayRunner
             var measurement = await detector.MeasureAsync(
                 bytes, frame.Time, riseAnalyzer.BaselineDoughHeightPx, CancellationToken.None);
             var diagnostics = detector.LastDiagnostics;
-            var debugImage = detector.LastDebugImagePath is { } path
+            var debugImage = (llmDetector?.LastDebugImagePath ?? classicDetector?.LastDebugImagePath) is { } path
                 ? Path.GetRelativePath(Path.GetFullPath(outPath), path)
                 : null;
             var reading = measurement is null ? null : riseAnalyzer.Analyze(measurement);
@@ -253,10 +261,13 @@ public static class ReplayRunner
         ReplayReportWriter.WriteHtml(Path.Combine(outPath, "report.html"), summary, rows);
 
         PrintSummary(summary);
-        Console.WriteLine($"LLM {llmOptions.Model}: ${detector.TotalCostUsd:F4} billed this run (cached answers are free)");
-        Console.WriteLine(
-            $"Sample spread over {detector.Spread.Cycles} cycles: mean {detector.Spread.Mean:F1} px, "
-            + $"max {detector.Spread.Max:F1} px, {detector.Spread.Noisy} cycles over {llmOptions.SpreadWarnPx:F0} px");
+        if (llmDetector is not null)
+        {
+            Console.WriteLine($"LLM {llmOptions.Model}: ${llmDetector.TotalCostUsd:F4} billed this run (cached answers are free)");
+            Console.WriteLine(
+                $"Sample spread over {llmDetector.Spread.Cycles} cycles: mean {llmDetector.Spread.Mean:F1} px, "
+                + $"max {llmDetector.Spread.Max:F1} px, {llmDetector.Spread.Noisy} cycles over {llmOptions.SpreadWarnPx:F0} px");
+        }
         return 0;
     }
 
@@ -391,7 +402,7 @@ public static class ReplayRunner
     private static void PrintUsage(string error)
     {
         Console.Error.WriteLine($"Error: {error}");
-        Console.Error.WriteLine("Usage: dotnet run -- replay <folder> [--out dir] [--config appsettings.json] [--roi x,y,w,h] [--stride N | --interval-minutes N] [--timestamps-utc] [--no-debug-images] [--model slug] [--max-calls N] [--llm-cache dir]");
+        Console.Error.WriteLine("Usage: dotnet run -- replay <folder> [--out dir] [--config appsettings.json] [--roi x,y,w,h] [--stride N | --interval-minutes N] [--timestamps-utc] [--no-debug-images] [--classic] [--model slug] [--max-calls N] [--llm-cache dir]");
     }
 
     private static string? ResolveConfigPath(string? configArg)

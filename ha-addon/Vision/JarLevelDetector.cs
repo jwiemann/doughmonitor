@@ -79,6 +79,7 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
     /// Their median stands in for a frame whose warm body is too faint to show the floor; the
     /// queue is seeded from the persisted geometry and cleared with every scene change.</summary>
     private readonly Queue<double> _floorOffsets = new();
+    private readonly Queue<double> _darkMassFloors = new();
 
     private const int FloorHistorySize = 9;
 
@@ -405,7 +406,8 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
             LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
             return null;
         }
-        var detectedGlow = DetectGlowBlob(img);
+        var glowCandidates = DetectGlowBlobs(img);
+        GlowBlob? detectedGlow = glowCandidates.Count > 0 ? glowCandidates[0] : null;
         // Night frames without backlight are uniformly dark: nothing bright enough to be
         // a lit jar (P90 floor) and no meaningful contrast (P90-P10 floor). The edge-energy
         // method would "detect" noise there and pollute the growth series. Percentile-based
@@ -421,15 +423,34 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
             return null;
         }
         _walls.Update(img);
-        if (detectedGlow is { } glow)
+        var glowFailed = false;
+        JarColumn? glowColumn = null;
+        if (detectedGlow is { } firstGlow)
         {
-            var litColumn = ConstrainToWalls(FindBacklitColumn(img, glow), img.Height)
-                ?? WallColumn(img.Width, img.Height);
+            var glow = firstGlow;
+            JarColumn? foundColumn = null;
+            foreach (var candidate in glowCandidates)
+            {
+                if (ConstrainToWalls(FindBacklitColumn(img, candidate), img.Height) is not { } found) continue;
+                glow = candidate;
+                foundColumn = found;
+                break;
+            }
+            var litColumn = foundColumn ?? WallColumn(img.Width, img.Height);
             var litMeasurement = litColumn is not null
                 ? MeasureBacklit(img, glow, litColumn, now, frameStats, sessionBaselineHeightPx)
-                  ?? (_proposedColumn is null
-                      ? MeasureSurfaceContinuity(img, litColumn, now, frameStats, sessionBaselineHeightPx)
-                      : null)
+                : null;
+            if (litMeasurement is null
+                && MeasureDarkMassAboveFoot(img, glowCandidates, now, frameStats) is { } darkMass)
+            {
+                // Before the continuity fallback: with a stale anchor it latches onto the lit glass
+                // base. This path holds no column geometry, so nothing is voted into the history.
+                _pendingWarmMove.Clear();
+                LastOutcome = "detected";
+                return darkMass;
+            }
+            litMeasurement ??= litColumn is not null && _proposedColumn is null
+                ? MeasureSurfaceContinuity(img, litColumn, now, frameStats, sessionBaselineHeightPx)
                 : null;
             if (litMeasurement is not null)
             {
@@ -442,11 +463,10 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
                 return litMeasurement;
             }
             _pendingWarmMove.Clear();
-            // Never reinterpret a recognized light source as a warm wall or edge surface.
-            LastOutcome = litColumn is null ? "no_jar" : "no_surface";
-            LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
-            SaveDebugImage(img, litColumn, null, litColumn?.Bottom, null, now, null);
-            return null;
+            // A recognized light source is never reinterpreted as a warm wall or edge surface.
+            // Only the dark-extent search below may still look for dough darker than the glass.
+            glowFailed = true;
+            glowColumn = litColumn;
         }
         using var blurred = new Mat();
         Cv2.GaussianBlur(img, blurred, new Size(5, 5), 0);
@@ -460,6 +480,7 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
         // A full-frame fallback needs independently confirmed column/base evidence;
         // colour alone also selects the wooden stand while the jar is absent.
         var genuineColumnEvidence = false;
+        if (!glowFailed)
         {
             using var edges = AutoCanny(blurred, medianIntensity, 1.0);
             var warmColumn = ConstrainToWalls(FindJarColumnByWarmExtent(
@@ -551,7 +572,7 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
         }
         // Transparent-wall evidence is useful only after the specific dough geometry
         // failed; lit stucco beside a backlit jar must never be interpreted as walls.
-        if (!backlitScene)
+        if (!backlitScene && !glowFailed)
         {
             foreach (var relaxation in new[] { 1.0, 0.6 })
             {
@@ -587,10 +608,11 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
             }
         }
         _pendingWarmMove.Clear();
-        LastOutcome = "no_surface";
+        LastOutcome = glowFailed && glowColumn is null ? "no_jar" : "no_surface";
         LastDiagnostics = WithFrameStats(new DetectionDiagnostics("none", 0, null, null), frameStats);
-        if (options.DebugSaveAnnotatedImages)
-            SaveDebugImage(img, null, null, null, null, now, visWarm);
+        // The glow path always recorded its column geometry in the diagnostics, debug images or not.
+        if (glowFailed || options.DebugSaveAnnotatedImages)
+            SaveDebugImage(img, glowColumn, null, glowColumn?.Bottom, null, now, glowFailed ? null : visWarm);
         return null;
     }
 
@@ -852,18 +874,91 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
         public int Bottom => Y + Height;
     }
 
-    // A light source proposes a search region; it is never itself a surface measurement.
-    private static GlowBlob? DetectGlowBlob(Mat gray)
+    /// <summary>Backlit night scene (IR camera, lamp behind the jar) where the dough reads as a dark
+    /// mass between the lamp glow above and the lit glass foot below. The foot is the wide
+    /// saturated component low in the frame; the strip of glass above it is profiled row by row
+    /// and the surface is where the dark run that starts inside the dough ends. The dough floor
+    /// is where that run ends below, held as a median so lamp flicker does not move the basis.
+    /// Returns null when there is no such foot or no dark mass with enough contrast to the
+    /// glass above it.</summary>
+    private LevelMeasurement? MeasureDarkMassAboveFoot(
+        Mat gray, IReadOnlyList<GlowBlob> candidates, DateTimeOffset now,
+        (double? Mean, double? Median, double? P10, double? P90) frameStats)
     {
+        GlowBlob? foot = null;
+        foreach (var blob in candidates)
+        {
+            if (blob.Width < gray.Width * 0.15 || blob.Width < 2 * blob.Height
+                || blob.Bottom < gray.Height * 0.7) continue;
+            if (foot is not { } held || blob.Bottom > held.Bottom) foot = blob;
+        }
+        if (foot is not { } glassFoot) return null;
+        var inset = glassFoot.Width / 6;
+        var left = glassFoot.X + inset;
+        var width = glassFoot.Width - 2 * inset;
+        var seed = glassFoot.Y - Math.Max(10, gray.Height / 48);
+        var lowest = Math.Min(gray.Height, glassFoot.Y + glassFoot.Height / 2);
+        if (width < 24 || seed < 60) return null;
+        using var strip = gray[new Rect(left, 0, width, lowest)];
+        var profile = MovingAverage(ReduceRowsMedian(strip), 5);
+
+        var doughLevel = 0.0;
+        var doughRows = Math.Max(6, gray.Height / 48);
+        for (var y = seed - doughRows; y < seed; y++) doughLevel += profile[y];
+        doughLevel /= doughRows;
+        var glassRows = new List<double>();
+        for (var y = Math.Max(0, seed - gray.Height * 36 / 100); y < seed - 30; y++) glassRows.Add(profile[y]);
+        if (glassRows.Count < 20) return null;
+        glassRows.Sort();
+        var glass = glassRows[(int)(glassRows.Count * 0.9)];
+        var contrast = glass - doughLevel;
+        if (contrast < 40) return null;
+        var threshold = doughLevel + 0.45 * contrast;
+
+        var maxGap = Math.Max(2, gray.Height / 144);
+        var gaps = 0;
+        var surface = -1;
+        for (var y = seed; y >= 0; y--)
+        {
+            if (profile[y] <= threshold) { gaps = 0; continue; }
+            if (++gaps <= maxGap) continue;
+            surface = y + gaps;
+            break;
+        }
+        if (surface < 0 || seed - surface < Math.Max(20, gray.Height / 36)) return null;
+        var floor = seed;
+        gaps = 0;
+        for (var y = seed; y < lowest; y++)
+        {
+            if (profile[y] <= threshold) { floor = y; gaps = 0; continue; }
+            if (++gaps > maxGap) break;
+        }
+        _darkMassFloors.Enqueue(floor);
+        while (_darkMassFloors.Count > 12) _darkMassFloors.Dequeue();
+        var heldFloor = _darkMassFloors.OrderBy(f => f).ElementAt(_darkMassFloors.Count / 2);
+        var marginY = Math.Max(2, gray.Height / 30);
+        var column = new JarColumn(glassFoot.X, glassFoot.Right, marginY, glassFoot.Bottom, "dark");
+        LastDiagnostics = WithFrameStats(new DetectionDiagnostics("dark_mass", contrast, null, surface), frameStats);
+        var baselineY = (int?)null;
+        SaveDebugImage(gray, column, surface, glassFoot.Bottom, baselineY, now, null);
+        return new LevelMeasurement(now, surface, marginY, glassFoot.Bottom, heldFloor + 1);
+    }
+
+    // Light sources propose search regions; none is itself a surface measurement. Candidates
+    // come back largest first: a lit glass foot can out-weigh the lamp glow above it, and the
+    // caller tries each until one has a foot below it.
+    private static List<GlowBlob> DetectGlowBlobs(Mat gray)
+    {
+        var result = new List<GlowBlob>();
         using var hot = new Mat();
         Cv2.Threshold(gray, hot, 235, 255, ThresholdTypes.Binary);
-        if (hot.CountNonZero() < Math.Max(8, gray.Width * (double)gray.Height * 0.001)) return null;
+        var minArea = gray.Width * (double)gray.Height * 0.001;
+        if (hot.CountNonZero() < Math.Max(8, minArea)) return result;
         using var labels = new Mat();
         using var stats = new Mat();
         using var centroids = new Mat();
         var count = Cv2.ConnectedComponentsWithStats(hot, labels, stats, centroids);
-        var best = -1;
-        var bestArea = gray.Width * (double)gray.Height * 0.001;
+        var areas = new List<(int Area, GlowBlob Blob)>();
         for (var i = 1; i < count; i++)
         {
             var width = stats.At<int>(i, 2);
@@ -871,13 +966,12 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
             var area = stats.At<int>(i, 4);
             if (width < gray.Width * 0.03 || width > gray.Width * 0.7 || bottom >= gray.Height - 12)
                 continue;
-            if (area <= bestArea) continue;
-            bestArea = area;
-            best = i;
+            if (area <= minArea) continue;
+            areas.Add((area, new GlowBlob(
+                stats.At<int>(i, 0), stats.At<int>(i, 1), stats.At<int>(i, 2), stats.At<int>(i, 3))));
         }
-        return best < 0 ? null : new GlowBlob(
-            stats.At<int>(best, 0), stats.At<int>(best, 1),
-            stats.At<int>(best, 2), stats.At<int>(best, 3));
+        result.AddRange(areas.OrderByDescending(a => a.Area).Select(a => a.Blob));
+        return result;
     }
 
     // The lit glass foot must be a separate, wide component below the source. This
