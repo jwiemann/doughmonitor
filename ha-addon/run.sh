@@ -43,6 +43,7 @@ export Monitor__Llm__ReasoningEffort="$(jq -r '.llm_reasoning_effort // "off"' "
 export Monitor__Llm__DetectionModeFilePath="/data/detection_mode.txt"
 export Monitor__Llm__UsageFilePath="/data/llm_usage.json"
 export Monitor__Analysis__TargetRisePercent="$(jq -r '.target_rise_percent // 100' "$CONFIG_PATH")"
+export Monitor__Analysis__BreadModeFilePath="/data/bread_mode.txt"
 export Monitor__Analysis__OvenPreheatLeadMinutes="$(jq -r '.oven_preheat_lead_minutes // 30' "$CONFIG_PATH")"
 
 # --- OpenCvSharp native libraries ---

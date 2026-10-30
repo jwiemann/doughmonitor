@@ -22,7 +22,8 @@ Monitor sourdough starter rise from Frigate camera snapshots, publish readings t
 | `sourdough_monitor_peak_eta` | `sensor` (timestamp) | Estimated time of peak |
 | `sourdough_monitor_target_rise_eta` (+ `_earliest` / `_latest`) | `sensor` (timestamp) | When the rise is expected to reach `target_rise_percent` (default 100 %, "doubled"); empty unless the dough is clearly rising |
 | `sourdough_monitor_peaked` | `binary_sensor` | ON when rise has peaked |
-| `sourdough_monitor_oven_preheat` | `binary_sensor` | ON from `oven_preheat_lead_minutes` (default 30) before the forecast peak, and once the peak is confirmed; time to heat the oven and the pot |
+| `sourdough_monitor_bread_mode` | `switch` | "Bread Mode": off by default, remembered across restarts. Only while it is on can "Oven Preheat" turn on, so feeding the daily starter gives no oven warning |
+| `sourdough_monitor_oven_preheat` | `binary_sensor` | With Bread Mode on: ON from `oven_preheat_lead_minutes` (default 30) before the forecast peak, and once the peak is confirmed; time to heat the oven and the pot |
 | `sourdough_monitor_reset` | `button` | Button to reset the current session |
 | `sourdough_monitor_llm_cost_today` | `sensor` (USD, diagnostic) | Billed LLM cost today (UTC day) |
 | `sourdough_monitor_llm_cost_total` | `sensor` (USD, diagnostic) | Billed LLM cost in total (kept in `/data/llm_usage.json`) |

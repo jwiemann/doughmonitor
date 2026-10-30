@@ -33,10 +33,20 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
 
     private string LlmDetectionStateTopic => $"{options.DeviceId}/llm_detection";
 
+    public string BreadModeCommandTopic => $"{options.DeviceId}/cmd/bread_mode";
+
+    private string BreadModeStateTopic => $"{options.DeviceId}/bread_mode";
+
     public event Func<Task>? ResetRequested;
 
     /// <summary>Raised when the "LLM Detection" switch is flipped in Home Assistant; true = LLM.</summary>
     public event Func<bool, Task>? LlmDetectionRequested;
+
+    /// <summary>Raised when the "Bread Mode" switch is flipped in Home Assistant; true = a bread dough is proofing.</summary>
+    public event Func<bool, Task>? BreadModeRequested;
+
+    /// <summary>True while a bread dough (not the daily starter) is watched: only then "Oven Preheat" may turn on.</summary>
+    public bool BreadMode { get; set; }
 
     public async Task ConnectAsync(CancellationToken ct)
     {
@@ -55,10 +65,14 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
             else if (topic == LlmDetectionCommandTopic && LlmDetectionRequested is not null
                      && ParseSwitchPayload(e.ApplicationMessage.ConvertPayloadToString()) is { } enabled)
                 await LlmDetectionRequested(enabled);
+            else if (topic == BreadModeCommandTopic && BreadModeRequested is not null
+                     && ParseSwitchPayload(e.ApplicationMessage.ConvertPayloadToString()) is { } breadMode)
+                await BreadModeRequested(breadMode);
         };
         await _client.ConnectAsync(builder.Build(), ct);
         await _client.SubscribeAsync(ResetCommandTopic, cancellationToken: ct);
         await _client.SubscribeAsync(LlmDetectionCommandTopic, cancellationToken: ct);
+        await _client.SubscribeAsync(BreadModeCommandTopic, cancellationToken: ct);
         await PublishAsync(AvailabilityTopic, "online", retain: true, ct);
         await PublishDiscoveryAsync(ct);
     }
@@ -78,7 +92,7 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                 target_eta_low = reading.TargetTimeLow?.ToString("O"),
                 target_eta_high = reading.TargetTimeHigh?.ToString("O"),
                 peaked = reading.Peaked ? "ON" : "OFF",
-                oven_preheat = reading.PreheatNow ? "ON" : "OFF",
+                oven_preheat = BreadMode && reading.PreheatNow ? "ON" : "OFF",
                 new_session = reading.NewSession,
                 data_stale = "OFF",
                 last_update = reading.Time.ToString("O"),
@@ -159,6 +173,10 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
     /// <summary>Publishes which detector is active, as the state of the "LLM Detection" switch.</summary>
     public Task PublishLlmDetectionStateAsync(bool llmEnabled, CancellationToken ct) =>
         PublishAsync(LlmDetectionStateTopic, llmEnabled ? "ON" : "OFF", retain: true, ct);
+
+    /// <summary>Publishes the state of the "Bread Mode" switch.</summary>
+    public Task PublishBreadModeStateAsync(bool enabled, CancellationToken ct) =>
+        PublishAsync(BreadModeStateTopic, enabled ? "ON" : "OFF", retain: true, ct);
 
     public static bool? ParseSwitchPayload(string? payload) => payload?.Trim().ToUpperInvariant() switch
     {
@@ -403,6 +421,27 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
         await PublishAsync(
             $"{options.DiscoveryPrefix}/switch/{options.DeviceId}/llm_detection/config",
             llmSwitchConfig,
+            retain: true,
+            ct);
+        var breadSwitchConfig = JsonSerializer.Serialize(
+            new
+            {
+                name = "Bread Mode",
+                unique_id = $"{options.DeviceId}_bread_mode",
+                command_topic = BreadModeCommandTopic,
+                state_topic = BreadModeStateTopic,
+                payload_on = "ON",
+                payload_off = "OFF",
+                state_on = "ON",
+                state_off = "OFF",
+                icon = "mdi:bread-slice",
+                availability_topic = AvailabilityTopic,
+                device
+            },
+            JsonOpts);
+        await PublishAsync(
+            $"{options.DiscoveryPrefix}/switch/{options.DeviceId}/bread_mode/config",
+            breadSwitchConfig,
             retain: true,
             ct);
         await PublishSensorConfigAsync(

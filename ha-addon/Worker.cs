@@ -25,6 +25,36 @@ public sealed class Worker(
 
     private bool _lossWarned;
 
+    /// <summary>"Bread mode" gates the oven-preheat signal: feeding the daily starter must not warn about an oven.
+    /// It is persisted so a restart keeps the choice; the default is off.</summary>
+    private bool LoadBreadMode()
+    {
+        var path = options.Analysis.BreadModeFilePath;
+        try
+        {
+            return !string.IsNullOrWhiteSpace(path) && File.Exists(path)
+                   && File.ReadAllText(path).Trim().Equals("on", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private void SaveBreadMode(bool enabled)
+    {
+        var path = options.Analysis.BreadModeFilePath;
+        if (string.IsNullOrWhiteSpace(path)) return;
+        try
+        {
+            File.WriteAllText(path, enabled ? "on" : "off");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(ex, "Could not persist the bread mode");
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         mqtt.ResetRequested += async () =>
@@ -41,6 +71,16 @@ public sealed class Worker(
             detector.LlmEnabled = enabled;
             await mqtt.PublishLlmDetectionStateAsync(enabled, ct);
         };
+        mqtt.BreadModeRequested += async enabled =>
+        {
+            logger.LogInformation("Bread mode {State} via MQTT", enabled ? "on" : "off");
+            mqtt.BreadMode = enabled;
+            SaveBreadMode(enabled);
+            await mqtt.PublishBreadModeStateAsync(enabled, ct);
+            // Apply at once instead of with the next reading, so switching off cancels the signal immediately.
+            if (_lastReading is not null) await mqtt.PublishReadingAsync(_lastReading, ct);
+        };
+        mqtt.BreadMode = LoadBreadMode();
         // Geometry changes invalidate the pixel-height baseline. The detector verifies
         // the new jar/base/surface; lighting and sampling-resolution changes retain it.
         detector.SceneChanged += () =>
@@ -64,6 +104,7 @@ public sealed class Worker(
         try
         {
             await mqtt.PublishLlmDetectionStateAsync(detector.LlmEnabled, ct);
+            await mqtt.PublishBreadModeStateAsync(mqtt.BreadMode, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

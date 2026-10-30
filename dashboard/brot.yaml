@@ -1,4 +1,4 @@
-# Home Assistant view "Brot" (compact) for the Sourdough Monitor add-on 0.4.4.
+# Home Assistant view "Brot" (compact) for the Sourdough Monitor add-on 0.4.5.
 # Paste as one entry under `views:` in the dashboard's raw configuration editor.
 # Needs debug_enabled: true in the add-on options for the debug image and the spread tile.
 type: sections
@@ -49,6 +49,12 @@ sections:
       - type: tile
         entity: sensor.sourdough_monitor_peak_eta
         name: Höhepunkt (ETA)
+      - type: tile
+        entity: switch.sourdough_monitor_bread_mode
+        name: Brot-Modus
+        icon: mdi:bread-slice
+        tap_action:
+          action: toggle
       - type: tile
         entity: binary_sensor.sourdough_monitor_oven_preheat
         name: Ofen anheizen

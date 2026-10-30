@@ -66,6 +66,9 @@ public sealed class AnalysisOptions
     /// to heat the oven and the pot). It stays on once the peak is confirmed. 0 turns the signal off.</summary>
     public int OvenPreheatLeadMinutes { get; init; } = 30;
 
+    /// <summary>File that remembers the "Bread Mode" switch across restarts; null = not persisted.</summary>
+    public string? BreadModeFilePath { get; init; }
+
     /// <summary>A peak or forecast requires the session's maximum rate to reach this many
     /// times <see cref="MaxRateStdErrPercentPerHour"/>: evidence that the dough really rose.</summary>
     public double MinSlopeEvidenceSigmas { get; init; } = 2.0;
