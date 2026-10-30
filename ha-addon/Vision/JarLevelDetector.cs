@@ -936,6 +936,11 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
         _darkMassFloors.Enqueue(floor);
         while (_darkMassFloors.Count > 12) _darkMassFloors.Dequeue();
         var heldFloor = _darkMassFloors.OrderBy(f => f).ElementAt(_darkMassFloors.Count / 2);
+        // The offset also feeds the day-light path, so the height basis stays the dough floor when the
+        // camera switches from IR night to colour in the morning (a floorless measurement is
+        // 'unavailable' once the analyzer's session is floor-based).
+        _floorOffsets.Enqueue(glassFoot.Bottom - (heldFloor + 1));
+        while (_floorOffsets.Count > FloorHistorySize) _floorOffsets.Dequeue();
         var marginY = Math.Max(2, gray.Height / 30);
         var column = new JarColumn(glassFoot.X, glassFoot.Right, marginY, glassFoot.Bottom, "dark");
         LastDiagnostics = WithFrameStats(new DetectionDiagnostics("dark_mass", contrast, null, surface), frameStats);

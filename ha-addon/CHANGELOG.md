@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- Classic detector: the `dark_mass` method now also feeds the dough-floor offset to the daylight path, so the
+  rise stays on the dough-floor basis when the camera switches from IR night to colour in the morning. Before,
+  the first daylight frames carried no floor and the rise analyzer reported them as unavailable.
+
 ## 0.4.1
 
 - Dashboard: target ETA tile and LLM detection switch; fix entity ids in docs
