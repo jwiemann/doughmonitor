@@ -441,7 +441,7 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
                 ? MeasureBacklit(img, glow, litColumn, now, frameStats, sessionBaselineHeightPx)
                 : null;
             if (litMeasurement is null
-                && MeasureDarkMassAboveFoot(img, glowCandidates, now, frameStats) is { } darkMass)
+                && MeasureDarkMassAboveFoot(img, glowCandidates, now, frameStats, sessionBaselineHeightPx) is { } darkMass)
             {
                 // Before the continuity fallback: with a stale anchor it latches onto the lit glass
                 // base. This path holds no column geometry, so nothing is voted into the history.
@@ -883,7 +883,7 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
     /// glass above it.</summary>
     private LevelMeasurement? MeasureDarkMassAboveFoot(
         Mat gray, IReadOnlyList<GlowBlob> candidates, DateTimeOffset now,
-        (double? Mean, double? Median, double? P10, double? P90) frameStats)
+        (double? Mean, double? Median, double? P10, double? P90) frameStats, double? sessionBaselineHeightPx)
     {
         GlowBlob? foot = null;
         foreach (var blob in candidates)
@@ -944,7 +944,8 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
         var marginY = Math.Max(2, gray.Height / 30);
         var column = new JarColumn(glassFoot.X, glassFoot.Right, marginY, glassFoot.Bottom, "dark");
         LastDiagnostics = WithFrameStats(new DetectionDiagnostics("dark_mass", contrast, null, surface), frameStats);
-        var baselineY = (int?)null;
+        var baselineY = sessionBaselineHeightPx is { } baselineHeight
+            ? (int?)Math.Round(heldFloor + 1 - baselineHeight) : null;
         SaveDebugImage(gray, column, surface, glassFoot.Bottom, baselineY, now, null);
         return new LevelMeasurement(now, surface, marginY, glassFoot.Bottom, heldFloor + 1);
     }

@@ -142,6 +142,8 @@ public sealed class Worker(
         }
         // A reading that starts a new session has just ended the previous one: publish its
         // summary (max rise, measured peak, prediction error) before the fresh session.
+        if (reading.NewSession)
+            logger.LogWarning("New rise session started: {Reason}", analyzer.LastSessionStartReason ?? "unknown");
         await PublishSessionEndAsync(ct);
         await TrackPublishedAsync(reading, ct);
         logger.LogInformation(

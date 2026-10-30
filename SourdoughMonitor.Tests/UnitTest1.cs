@@ -442,10 +442,32 @@ public class RiseAnalyzerTests
         Assert.All(readings, r => Assert.False(r.Peaked));
     }
 
+    [Fact]
+    public void Analyze_RateIsFittedOverAtLeastTheMinimumSpan()
+    {
+        var start = new DateTimeOffset(2026, 10, 3, 10, 0, 0, TimeSpan.Zero);
+        var analyzer = new RiseAnalyzer(new AnalysisOptions
+        {
+            BaselineSettleMinutes = 0,
+            SlopeWindowMinutes = 120,
+            RateMinSpanMinutes = 60,
+            StateFilePath = null
+        });
+        analyzer.Analyze(AtHeight(start, 100));
+        int? firstMinute = null;
+        for (var minute = 5; minute <= 90; minute += 5)
+        {
+            var reading = analyzer.Analyze(AtHeight(start.AddMinutes(minute), 100 + 0.2 * minute));
+            if (reading?.RiseRatePercentPerHour is not null) firstMinute ??= minute;
+        }
+        Assert.InRange(firstMinute!.Value, 60, 65);
+    }
+
     private static RiseAnalyzer NewAnalyzer() => new(new AnalysisOptions
     {
         BaselineSettleMinutes = 0,
         SlopeWindowMinutes = 40,
+        RateMinSpanMinutes = 0,
         ResetDropFraction = 0.25,
         MinSamplesForFit = 3,
         PeakConfirmWindows = 3,

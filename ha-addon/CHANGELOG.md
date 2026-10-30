@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.3
+
+- Rise rate: fitted over at least 60 minutes (new option `RateMinSpanMinutes`, default 60) instead of the
+  shortest span that is statistically sufficient (about 30-40 minutes). One pixel step in 5 minutes read as a
+  surge or stall; 60 minutes follow the real rate and read about 0 only when the dough has stopped rising.
+- The log now says why a rise session started ("New rise session started: manual reset / session older than
+  36 h / height fell ... / dough floor offset implausible / no active session after a restart").
+- Classic detector: the `dark_mass` debug image draws the session-start line, so a session restart is visible
+  in the diagnostics sidecar (`session_start_surface_px` was empty on these frames).
+
 ## 0.4.2
 
 - Classic detector: the `dark_mass` method now also feeds the dough-floor offset to the daylight path, so the

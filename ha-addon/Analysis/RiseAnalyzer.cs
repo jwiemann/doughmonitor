@@ -52,10 +52,15 @@ public sealed class RiseAnalyzer
     /// reference line on the debug image.</summary>
     public double? BaselineDoughHeightPx => _baselineDoughHeightPx;
 
+    /// <summary>Why the current session was started (manual reset, expiry, collapse, ...), for the log.
+    /// A session that starts without an obvious cause is otherwise impossible to reconstruct.</summary>
+    public string? LastSessionStartReason { get; private set; }
+
     public RiseReading Reset()
     {
         var now = DateTimeOffset.UtcNow;
         CaptureSessionSummary(now);
+        LastSessionStartReason = "manual reset";
         ResetSession(DateTimeOffset.MinValue, null);
         SaveState();
         return new RiseReading(now, 0, null, null, null, null, null, false, NewSession: true);
@@ -64,8 +69,11 @@ public sealed class RiseAnalyzer
     public RiseReading? Analyze(LevelMeasurement m)
     {
         if (_lastMeasurementTime is { } lastTime && m.Time <= lastTime) return null;
-        if (_baselineDoughHeightPx is not { } baseline || SessionExpired(m.Time))
-            return StartMeasuredSession(m.Time, m.DoughHeightPx, m.OnDoughFloor);
+        if (_baselineDoughHeightPx is not { } baseline)
+            return StartMeasuredSession(m.Time, m.DoughHeightPx, m.OnDoughFloor, "no active session (after a reset or restart)");
+        if (SessionExpired(m.Time))
+            return StartMeasuredSession(m.Time, m.DoughHeightPx, m.OnDoughFloor,
+                $"session older than {_options.MaxSessionHours} h");
         if (_baselineOnDoughFloor != m.OnDoughFloor)
         {
             // A floor-based session cannot take a glass-bottom height (floor not measured
@@ -74,7 +82,9 @@ public sealed class RiseAnalyzer
             // The scene's floor was first measured mid-session. Convert the session to the
             // floor basis rather than restarting it, so the history survives.
             var rebased = RebaseToDoughFloor(m.JarBottomPx - m.DoughFloorPx!.Value);
-            if (rebased is null) return StartMeasuredSession(m.Time, m.DoughHeightPx, true);
+            if (rebased is null)
+                return StartMeasuredSession(m.Time, m.DoughHeightPx, true,
+                    $"dough floor offset {m.JarBottomPx - m.DoughFloorPx!.Value:F0} px implausible for the running session");
             baseline = rebased.Value;
         }
 
@@ -86,7 +96,9 @@ public sealed class RiseAnalyzer
             var pending = _pendingCollapseHeights ??= [];
             pending.Add(m.DoughHeightPx);
             if (pending.Count < _options.CollapseConfirmSamples) return null;
-            return StartMeasuredSession(m.Time, pending.Median(), m.OnDoughFloor);
+            return StartMeasuredSession(m.Time, pending.Median(), m.OnDoughFloor,
+                $"height fell to {pending.Median():F0} px, more than {_options.ResetDropFraction:P0} below the session "
+                + $"(baseline {baseline:F0} px, recent rise median {_samples.TakeLast(5).Select(s => s.RisePercent).DefaultIfEmpty(0).Median():F0} %)");
         }
         _pendingCollapseHeights?.Clear();
         if (IsImplausibleJump(m.DoughHeightPx, m.Time))
@@ -352,6 +364,9 @@ public sealed class RiseAnalyzer
         if (_baselineDoughHeightPx is not { } baseline || baseline <= 0) return null;
         var floorVariance = Math.Pow(_options.RateNoiseFloorPx / baseline * 100.0, 2);
         var cutoff = now.AddMinutes(-_options.SlopeWindowMinutes);
+        // A shorter span follows single-pixel steps (1 px is about 0.8 % of the jar's dough height) and
+        // reads like a stall or a surge; the window itself bounds the span.
+        var minSpanMinutes = Math.Min(_options.RateMinSpanMinutes, _options.SlopeWindowMinutes);
         // Running sums over the trailing samples, newest first, in hours relative to now.
         double n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0, syy = 0;
         for (var i = _samples.Count - 1; i >= 0 && _samples[i].Time >= cutoff; i--)
@@ -364,7 +379,7 @@ public sealed class RiseAnalyzer
             sxx += x * x;
             sxy += x * y;
             syy += y * y;
-            if (n < MinRateSamples) continue;
+            if (n < MinRateSamples || (now - _samples[i].Time).TotalMinutes < minSpanMinutes) continue;
             var spreadX = sxx - sx * sx / n;
             if (spreadX <= 0) continue;
             var covariance = sxy - sx * sy / n;
@@ -522,8 +537,10 @@ public sealed class RiseAnalyzer
         return summary;
     }
 
-    private RiseReading StartMeasuredSession(DateTimeOffset time, double heightPx, bool onDoughFloor)
+    private RiseReading StartMeasuredSession(
+        DateTimeOffset time, double heightPx, bool onDoughFloor, string reason)
     {
+        LastSessionStartReason = reason;
         CaptureSessionSummary(time);
         ResetSession(time, heightPx, onDoughFloor);
         _lastAcceptedHeightPx = heightPx;
@@ -572,6 +589,7 @@ public sealed class RiseAnalyzer
             _peakReferenceRisePercent = state.PeakReferenceRisePercent;
             if (_samples.Count > 0 && SessionExpired(DateTimeOffset.UtcNow))
             {
+                LastSessionStartReason = $"persisted session older than {_options.MaxSessionHours} h at startup";
                 ResetSession(DateTimeOffset.UtcNow, null);
             }
             else if (_samples.Count > 0 && _baselineDoughHeightPx is not null)
@@ -589,6 +607,7 @@ public sealed class RiseAnalyzer
         }
         catch (Exception)
         {
+            LastSessionStartReason = "persisted session state unreadable at startup";
             ResetSession(DateTimeOffset.UtcNow, null);
         }
     }

@@ -8,6 +8,11 @@ public sealed class AnalysisOptions
     /// slope while growth accelerates or slows, so it is bounded.</summary>
     public int SlopeWindowMinutes { get; init; } = 120;
 
+    /// <summary>Shortest trailing span (minutes) the rise rate is fitted over. 60 minutes follow the real
+    /// rate through the whole rise (it reads 0 only when the dough has stopped) without the pixel-step
+    /// spikes of 30-45 minute spans; capped by <see cref="SlopeWindowMinutes"/>.</summary>
+    public int RateMinSpanMinutes { get; init; } = 60;
+
     /// <summary>Standard deviation (px) of a single dough-height reading around the true
     /// surface. Measured about 0.8 px on a static jar; the effective value is about twice as
     /// large because the noise is correlated over minutes, so 2.0 px keeps the computed
