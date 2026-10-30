@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.4
+
+- New binary sensor "Oven Preheat" (`binary_sensor.sourdough_monitor_oven_preheat`): ON from `oven_preheat_lead_minutes`
+  (default 30) before the forecast peak and once the peak is confirmed. The forecast point lay 18-53 minutes early on
+  the 2026-10-30 bake, so it errs on the early side. 0 turns it off. No notification; sensor and dashboard tile only.
+
 ## 0.4.3
 
 - Rise rate: fitted over at least 60 minutes (new option `RateMinSpanMinutes`, default 60) instead of the

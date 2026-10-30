@@ -67,6 +67,25 @@ public class RiseAnalyzerForecastTests
         Assert.Null(last.PredictedPeakTimeHigh);
     }
 
+    [Fact]
+    public void OvenPreheat_IsOffWhileFarFromThePeak_OnWithinTheLeadTime_AndOnceTheDoughHasPeaked()
+    {
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null, OvenPreheatLeadMinutes = 30 });
+        var onBeforePeak = false;
+        RiseReading? last = null;
+        for (var step = 0; step <= 12 * 10; step++)
+        {
+            last = analyzer.Analyze(RampThenFall(step));
+            var hours = step / 12.0;
+            // The rate reaches zero at 7.7 h: far earlier there is nothing to preheat for.
+            if (hours < 6.0) Assert.False(last!.PreheatNow, $"preheat at {hours:F2} h");
+            if (hours < 7.7 && last!.PreheatNow) onBeforePeak = true;
+        }
+        Assert.True(onBeforePeak, "preheat never came on before the peak");
+        Assert.True(last!.Peaked);
+        Assert.True(last.PreheatNow);
+    }
+
     /// <summary>2026-10-14: the rise slowed to a stall at 19 % for about an hour (15:15-16:00 UTC),
     /// then resumed at 20 %/h. A stall that early is not the peak of a daily-fed jar (100-130 %).</summary>
     private static IEnumerable<LevelMeasurement> StallAt19Percent()

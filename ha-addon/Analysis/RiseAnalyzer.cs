@@ -154,7 +154,18 @@ public sealed class RiseAnalyzer
             SessionStart: _sessionStart,
             TargetTime: target?.Eta,
             TargetTimeLow: target?.Low,
-            TargetTimeHigh: target?.High);
+            TargetTimeHigh: target?.High,
+            PreheatNow: PreheatNow(m.Time, eta));
+    }
+
+    /// <summary>True from <see cref="AnalysisOptions.OvenPreheatLeadMinutes"/> before the forecast peak,
+    /// and from the moment the peak is confirmed. The forecast point lay 18-53 minutes early on the
+    /// 2026-10-30 bake, so the signal errs on the early side, which costs only some energy.</summary>
+    private bool PreheatNow(DateTimeOffset now, DateTimeOffset? peakEta)
+    {
+        if (_options.OvenPreheatLeadMinutes <= 0) return false;
+        if (_peaked) return true;
+        return peakEta is { } eta && (eta - now).TotalMinutes <= _options.OvenPreheatLeadMinutes;
     }
 
     /// <summary>When the rise is expected to reach <see cref="AnalysisOptions.TargetRisePercent"/>:

@@ -13,4 +13,5 @@ public sealed record RiseReading(
     DateTimeOffset? SessionStart = null,
     DateTimeOffset? TargetTime = null,
     DateTimeOffset? TargetTimeLow = null,
-    DateTimeOffset? TargetTimeHigh = null);
+    DateTimeOffset? TargetTimeHigh = null,
+    bool PreheatNow = false);

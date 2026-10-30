@@ -78,6 +78,7 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                 target_eta_low = reading.TargetTimeLow?.ToString("O"),
                 target_eta_high = reading.TargetTimeHigh?.ToString("O"),
                 peaked = reading.Peaked ? "ON" : "OFF",
+                oven_preheat = reading.PreheatNow ? "ON" : "OFF",
                 new_session = reading.NewSession,
                 data_stale = "OFF",
                 last_update = reading.Time.ToString("O"),
@@ -105,6 +106,7 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                 target_eta_low = (string?)null,
                 target_eta_high = (string?)null,
                 peaked = "OFF",
+                oven_preheat = "OFF",
                 new_session = false,
                 data_stale = "ON",
                 last_update = lastReading.Time.ToString("O"),
@@ -327,6 +329,25 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
         await PublishAsync(
             $"{options.DiscoveryPrefix}/binary_sensor/{options.DeviceId}/peaked/config",
             binaryConfig,
+            retain: true,
+            ct);
+        var preheatConfig = JsonSerializer.Serialize(
+            new
+            {
+                name = "Oven Preheat",
+                unique_id = $"{options.DeviceId}_oven_preheat",
+                state_topic = StateTopic,
+                value_template = "{{ value_json.oven_preheat }}",
+                payload_on = "ON",
+                payload_off = "OFF",
+                icon = "mdi:stove",
+                availability_topic = AvailabilityTopic,
+                device
+            },
+            JsonOpts);
+        await PublishAsync(
+            $"{options.DiscoveryPrefix}/binary_sensor/{options.DeviceId}/oven_preheat/config",
+            preheatConfig,
             retain: true,
             ct);
         var staleConfig = JsonSerializer.Serialize(
