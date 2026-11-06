@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.7
+
+- Wall-contact height next to the classic reading (`WallContactMeasurer`, `StableHeightTracker`,
+  `WallHeightService`): topmost dough row over the jar interior, dough/glass contact rows at the left and right
+  wall, and a steady height line = dome top + the trailing-median dome offset from frames where both walls agree
+  (dome top alone when the dough does not touch both walls). On a ragged surface (median row more than 14 px below
+  the top) the classic detector's line replaces the topmost spike. The classic dough top sat about 5 px (smooth
+  dome) to 16 px (ragged lump) below the real top on the 2026-10-29 and 2026-11-05 bread sessions.
+- Replay `readings.csv` gains `dome_top_row`, `dome_source`, `wall_left_row`, `wall_right_row`, `wall_level_row`,
+  `stable_height_row`, `height_source` at the end. The live worker logs them each cycle and adds them to the debug
+  diagnostics payload. `RiseAnalyzer` and the rise percentages still use the classic dough top. Pixel rows
+  (300-600) and the jar width range (240-300 px) are tuned for the current camera framing (`WallContactOptions`).
+
 ## 0.4.6
 
 - New option `bread_target_rise_percent` (default 50): while "Bread Mode" is on, "Target Rise ETA" counts down to this

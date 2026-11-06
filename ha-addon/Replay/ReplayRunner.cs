@@ -5,6 +5,8 @@ using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
+using OpenCvSharp;
+
 using SourdoughMonitor.Analysis;
 using SourdoughMonitor.Config;
 using SourdoughMonitor.Services;
@@ -172,6 +174,11 @@ public static class ReplayRunner
 
         var rows = new List<ReplayFrameRow>(frames.Count);
         RiseReading? lastReading = null;
+        var wallHeight = new WallHeightService();
+        detector.SceneChanged += () =>
+        {
+            wallHeight.Reset();
+        };
 
         foreach (var frame in frames)
         {
@@ -200,6 +207,7 @@ public static class ReplayRunner
             {
                 lastReading = reading;
             }
+            var wall = wallHeight.Measure(bytes, diagnostics, measurement);
             rows.Add(new ReplayFrameRow(
                 File: frame.Path,
                 Time: frame.Time,
@@ -230,7 +238,19 @@ public static class ReplayRunner
                 PredictedPeakTimeHigh: reading?.PredictedPeakTimeHigh,
                 Peaked: reading?.Peaked ?? false,
                 NewSession: reading?.NewSession ?? false,
-                DebugImage: debugImage));
+                DebugImage: debugImage,
+                DomeTopRow: wall?.DomeTopRow,
+                DomeSource: wall?.DomeSource == DomeSource.Classic ? "classic" : "top",
+                WallLeftRow: wall?.WallLeftRow,
+                WallRightRow: wall?.WallRightRow,
+                WallLevelRow: wall?.WallLevelRow,
+                StableHeightRow: wall?.StableHeightRow,
+                HeightSource: wall?.HeightSource switch
+                {
+                    HeightSource.ApexOnly => "apex_only",
+                    HeightSource.WallAndDome => "wall_and_dome",
+                    _ => "none",
+                }));
         }
 
         var methodCounts = rows
@@ -331,7 +351,8 @@ public static class ReplayRunner
             "file,time,time_source,outcome,method,frame_mean,frame_median,frame_p10,frame_p90,band_contrast,"
             + "band_top_row,final_row,dough_top_px,jar_top_px,jar_bottom_px,jar_left_px,jar_right_px,jar_column_kind,dough_height_px,dough_floor_px,"
             + "reading,rise_percent,rise_rate_pct_per_h,predicted_peak_percent,"
-            + "predicted_peak_time,predicted_peak_time_low,predicted_peak_time_high,peaked,new_session,debug_image");
+            + "predicted_peak_time,predicted_peak_time_low,predicted_peak_time_high,peaked,new_session,debug_image,"
+            + "dome_top_row,dome_source,wall_left_row,wall_right_row,wall_level_row,stable_height_row,height_source");
         foreach (var r in rows)
         {
             sb.AppendLine(string.Join(
@@ -365,7 +386,14 @@ public static class ReplayRunner
                 r.PredictedPeakTimeHigh?.ToString("O", CultureInfo.InvariantCulture) ?? "",
                 r.Peaked ? "true" : "false",
                 r.NewSession ? "true" : "false",
-                r.DebugImage ?? ""));
+                r.DebugImage ?? "",
+                N(r.DomeTopRow),
+                r.DomeSource,
+                N(r.WallLeftRow),
+                N(r.WallRightRow),
+                N(r.WallLevelRow),
+                N(r.StableHeightRow),
+                r.HeightSource));
         }
         File.WriteAllText(path, sb.ToString());
     }

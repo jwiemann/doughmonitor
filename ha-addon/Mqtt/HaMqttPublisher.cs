@@ -195,7 +195,8 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
         DetectionDiagnostics? diagnostics,
         LevelMeasurement? measurement,
         double? surfaceLostAfterPeakMinutes,
-        CancellationToken ct)
+        CancellationToken ct,
+        WallHeightReading? wall = null)
     {
         if (!options.DebugMode) return;
         var payload = JsonSerializer.Serialize(
@@ -219,7 +220,12 @@ public sealed class HaMqttPublisher(MqttOptions options) : IAsyncDisposable
                 samples_usable = diagnostics?.SampleCount,
                 surface_lost_after_peak_minutes = surfaceLostAfterPeakMinutes is { } lost
                     ? (double?)Math.Round(lost)
-                    : null
+                    : null,
+                dome_top_row = wall?.DomeTopRow,
+                wall_level_row = wall?.WallLevelRow,
+                stable_height_row = wall?.StableHeightRow,
+                height_source = wall?.HeightSource.ToString(),
+                dome_source = wall?.DomeSource.ToString()
             },
             JsonOpts);
         await PublishAsync(DiagnosticsTopic, payload, retain: true, ct);

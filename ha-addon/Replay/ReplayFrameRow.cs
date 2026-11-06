@@ -38,4 +38,14 @@ public sealed record ReplayFrameRow(
     bool Peaked,
     bool NewSession,
     /// <summary>Path of the annotated debug image written for this frame, relative to the replay output directory. Null when none was written.</summary>
-    string? DebugImage);
+    string? DebugImage,
+    /// <summary>Wall-contact measurement (image rows; see <see cref="Vision.WallContactMeasurer"/>): topmost
+    /// dough row, dough/glass contact at the left and right wall, the fused wall level, and the steady
+    /// height line with its origin ("none", "apex_only", "wall_and_dome").</summary>
+    double? DomeTopRow = null,
+    string DomeSource = "",
+    double? WallLeftRow = null,
+    double? WallRightRow = null,
+    double? WallLevelRow = null,
+    double? StableHeightRow = null,
+    string HeightSource = "");

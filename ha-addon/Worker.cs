@@ -23,6 +23,9 @@ public sealed class Worker(
 
     private readonly SurfaceLossMonitor _surfaceLoss = new(options.Analysis);
 
+    /// <summary>Wall-contact height next to the classic reading; published with the debug diagnostics only.</summary>
+    private readonly WallHeightService _wallHeight = new();
+
     private bool _lossWarned;
 
     /// <summary>"Bread mode" gates the oven-preheat signal: feeding the daily starter must not warn about an oven.
@@ -89,6 +92,7 @@ public sealed class Worker(
         {
             logger.LogWarning("Jar geometry changed (camera moved/bumped); resetting rise session");
             _ = analyzer.Reset();
+            _wallHeight.Reset();
         };
         try
         {
@@ -162,11 +166,27 @@ public sealed class Worker(
                 lossMinutes);
         }
 
+        WallHeightReading? wall = null;
+        try
+        {
+            wall = _wallHeight.Measure(jpeg, detector.LastDiagnostics, measurement);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Wall-contact height failed; continuing without it");
+        }
+        if (wall is not null)
+        {
+            logger.LogInformation(
+                "Height rows: dome {Dome} ({DomeSource}) | wall {Wall} | steady {Steady} ({Source})",
+                wall.DomeTopRow, wall.DomeSource, wall.WallLevelRow, wall.StableHeightRow, wall.HeightSource);
+        }
+
         // Publish debug image and diagnostics via MQTT when debug mode is enabled
         if (options.Mqtt.DebugMode && detector.LatestAnnotatedImageBytes is not null)
         {
             await mqtt.PublishDebugImageAsync(detector.LatestAnnotatedImageBytes, ct);
-            await mqtt.PublishDetectionDiagnosticsAsync(detector.LastDiagnostics, measurement, lossMinutes, ct);
+            await mqtt.PublishDetectionDiagnosticsAsync(detector.LastDiagnostics, measurement, lossMinutes, ct, wall);
         }
         if (measurement is null)
         {
