@@ -62,6 +62,10 @@ public sealed class AnalysisOptions
     /// analyzer publishes when the rise is expected to reach it. 0 disables it.</summary>
     public double TargetRisePercent { get; init; } = 100;
 
+    /// <summary>The rise (%) the "Target Rise ETA" counts down to while "Bread Mode" is on: a bread dough is
+    /// baked at about +50 % (spelt gluten is weak, bake before the maximum), not at "doubled". 0 disables it.</summary>
+    public double BreadTargetRisePercent { get; init; } = 50;
+
     /// <summary>Minutes before the forecast peak at which "Oven Preheat" turns on (the baker needs this long
     /// to heat the oven and the pot). It stays on once the peak is confirmed. 0 turns the signal off.</summary>
     public int OvenPreheatLeadMinutes { get; init; } = 30;

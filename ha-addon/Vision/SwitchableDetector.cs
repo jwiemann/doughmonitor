@@ -4,11 +4,11 @@ namespace SourdoughMonitor.Vision;
 
 /// <summary>Runs either the vision-LLM detector or the classic image-pattern detector, chosen at
 /// runtime (Home Assistant switch). The choice is persisted so it survives a restart.
-/// <para>Both feed one rise session, so their measurements are put on one height basis: the
-/// glass bottom (the classic detector's dough floor is dropped, the LLM detector has none), and
-/// after a switch the new detector's jar bottom is replaced by the bottom the session was
-/// measured with. Without it the two detectors' slightly different bottom rows would shift the
-/// dough height, and with it every rise percentage, at the moment of the switch.</para></summary>
+/// <para>Both feed one rise session: after a switch the new detector's jar bottom is replaced by the
+/// bottom the session was measured with, and the classic detector's dough floor stands while the LLM
+/// detector (which measures none) gets the last known floor offset. Without it the detectors'
+/// slightly different rows would shift the dough height, and with it every rise percentage, at the
+/// moment of the switch.</para></summary>
 public sealed class SwitchableDetector : IJarDetector
 {
     private readonly IJarDetector _classic;
@@ -19,6 +19,7 @@ public sealed class SwitchableDetector : IJarDetector
     private IJarDetector? _lastSource;
     private double? _lastBottomPx;
     private double? _anchorBottomPx;
+    private double? _floorOffsetPx;
 
     public SwitchableDetector(IJarDetector classic, IJarDetector llm, string? stateFilePath, bool llmDefault = true)
     {
@@ -60,10 +61,14 @@ public sealed class SwitchableDetector : IJarDetector
         if (measurement is null) return null;
         if (_lastSource is not null && !ReferenceEquals(_lastSource, detector))
             _anchorBottomPx ??= _lastBottomPx;
+        if (measurement.DoughFloorPx is { } ownFloor) _floorOffsetPx = measurement.JarBottomPx - ownFloor;
+        var bottom = _anchorBottomPx ?? measurement.JarBottomPx;
+        // The classic detector's floor stands; the LLM has none, so it gets the last known floor
+        // (glass bottom less the held offset) and both feed one floor-based session.
         measurement = measurement with
         {
-            DoughFloorPx = null,
-            JarBottomPx = _anchorBottomPx ?? measurement.JarBottomPx
+            DoughFloorPx = measurement.DoughFloorPx ?? (_floorOffsetPx is { } offset ? bottom - offset : null),
+            JarBottomPx = bottom
         };
         _lastSource = detector;
         _lastBottomPx = measurement.JarBottomPx;
@@ -74,6 +79,7 @@ public sealed class SwitchableDetector : IJarDetector
     private void OnSceneChanged()
     {
         _anchorBottomPx = null;
+        _floorOffsetPx = null;
         _lastSource = null;
         _lastBottomPx = null;
         SceneChanged?.Invoke();

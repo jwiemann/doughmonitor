@@ -75,12 +75,14 @@ public sealed class Worker(
         {
             logger.LogInformation("Bread mode {State} via MQTT", enabled ? "on" : "off");
             mqtt.BreadMode = enabled;
+            analyzer.BreadMode = enabled;
             SaveBreadMode(enabled);
             await mqtt.PublishBreadModeStateAsync(enabled, ct);
             // Apply at once instead of with the next reading, so switching off cancels the signal immediately.
             if (_lastReading is not null) await mqtt.PublishReadingAsync(_lastReading, ct);
         };
         mqtt.BreadMode = LoadBreadMode();
+        analyzer.BreadMode = mqtt.BreadMode;
         // Geometry changes invalidate the pixel-height baseline. The detector verifies
         // the new jar/base/surface; lighting and sampling-resolution changes retain it.
         detector.SceneChanged += () =>

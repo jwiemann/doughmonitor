@@ -107,7 +107,11 @@ public sealed class LlmJarDetector(
             ? null
             : usable.Max(d => d.Interpretation!.SurfaceRow!.Value) - usable.Min(d => d.Interpretation!.SurfaceRow!.Value);
         LlmInterpretation consensus;
-        if (usable.Count * 2 > wanted)
+        if (usable.Count * 2 > wanted && llm.MaxSampleSpreadPx > 0 && spread > llm.MaxSampleSpreadPx)
+        {
+            consensus = new LlmInterpretation("llm_rejected", "unstable_samples", null, [], [], null);
+        }
+        else if (usable.Count * 2 > wanted)
         {
             consensus = Consensus(usable);
         }

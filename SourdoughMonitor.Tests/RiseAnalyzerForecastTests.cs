@@ -236,4 +236,33 @@ public class RiseAnalyzerForecastTests
             Assert.Null(reading!.TargetTime);
         }
     }
+
+    [Fact]
+    public void BreadMode_CountsDownToTheBreadTargetInsteadOfTheStarterTarget()
+    {
+        DateTimeOffset? Eta(bool bread)
+        {
+            var analyzer = new RiseAnalyzer(new AnalysisOptions
+            {
+                StateFilePath = null,
+                BaselineSettleMinutes = 0,
+                TargetRisePercent = 100,
+                BreadTargetRisePercent = 50
+            })
+            { BreadMode = bread };
+            RiseReading? last = null;
+            for (var minute = 0; minute <= 120; minute += 5)
+                last = analyzer.Analyze(new LevelMeasurement(Start.AddMinutes(minute), 200 - 40 * minute / 60.0, 0, 400));
+            return last!.TargetTime;
+        }
+
+        var starter = Eta(bread: false);
+        var bread = Eta(bread: true);
+
+        // +20 %/h from +0 %: +50 % at 2.5 h, +100 % at 5 h.
+        Assert.NotNull(starter);
+        Assert.NotNull(bread);
+        Assert.InRange((bread!.Value - Start).TotalHours, 2.3, 2.7);
+        Assert.InRange((starter!.Value - Start).TotalHours, 4.7, 5.3);
+    }
 }

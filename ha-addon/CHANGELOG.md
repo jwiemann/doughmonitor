@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.6
+
+- New option `bread_target_rise_percent` (default 50): while "Bread Mode" is on, "Target Rise ETA" counts down to this
+  rise instead of `target_rise_percent` (default 100, "doubled", for the daily starter). Switching the mode applies
+  from the next reading.
+- LLM detection rejects a cycle whose usable samples differ by more than `Llm:MaxSampleSpreadPx` (40 px) as
+  `unstable_samples`. A new jar made the model draw outlines 110-140 px apart on 2026-11-05; the median of that cycle
+  started a session at a bogus start height and the rise showed the 500 % clamp.
+- The live path keeps the classic detector's dough floor (0.3.0 dropped it, so only the replay measured from the
+  dough floor). The rise is now relative to the dough, not to the glass including its foot: with a 90 px foot under a
+  98 px sample the percentages were about half of the dough's real rise. The LLM detector gets the last known floor
+  offset, so switching detectors mid-session keeps one basis. Press Reset after the update.
+
 ## 0.4.5
 
 - New switch "Bread Mode" (`switch.sourdough_monitor_bread_mode`, off by default, persisted in /data/bread_mode.txt):

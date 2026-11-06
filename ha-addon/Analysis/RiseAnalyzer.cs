@@ -56,6 +56,10 @@ public sealed class RiseAnalyzer
     /// A session that starts without an obvious cause is otherwise impossible to reconstruct.</summary>
     public string? LastSessionStartReason { get; private set; }
 
+    /// <summary>True while a bread dough (not the daily starter) is watched: the target rise is then
+    /// <see cref="AnalysisOptions.BreadTargetRisePercent"/> instead of <see cref="AnalysisOptions.TargetRisePercent"/>.</summary>
+    public bool BreadMode { get; set; }
+
     public RiseReading Reset()
     {
         var now = DateTimeOffset.UtcNow;
@@ -175,7 +179,7 @@ public sealed class RiseAnalyzer
     /// end below the target cancels it, one that ends sooner than the linear estimate caps it.</summary>
     private TargetEstimate? TargetCrossing(DateTimeOffset now, RateForecast? forecast)
     {
-        var target = _options.TargetRisePercent;
+        var target = BreadMode ? _options.BreadTargetRisePercent : _options.TargetRisePercent;
         if (target <= 0 || _samples.Count < TargetMinReadings) return null;
         var points = new List<(double X, double Y)>();
         for (var i = _samples.Count - 1; i >= 0; i--)

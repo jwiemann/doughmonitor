@@ -21,6 +21,11 @@ public sealed class LlmOptions
     /// running spread statistics.</summary>
     public double SpreadWarnPx { get; init; } = 10;
 
+    /// <summary>A cycle whose usable samples differ by more than this many pixels is rejected as
+    /// unstable. Normal spread is 0-10 px; spreads of 110-140 px came with garbage outlines of a new
+    /// jar (2026-11-05) and started a rise session on a bogus height. 0 disables it.</summary>
+    public double MaxSampleSpreadPx { get; init; } = 40;
+
     /// <summary>Completion budget per call. Reasoning models count thinking tokens against it, so
     /// a small value truncates the JSON answer.</summary>
     public int MaxTokens { get; init; } = 2000;

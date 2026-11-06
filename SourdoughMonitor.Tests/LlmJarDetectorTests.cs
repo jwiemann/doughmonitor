@@ -212,15 +212,26 @@ public class LlmJarDetectorTests
     [Fact]
     public async Task ThreeSamples_UseTheMedianLevelAndRecordTheSpread()
     {
-        var detector = Sampling(Json(480), Json(560), Json(500));
+        var detector = Sampling(Json(480), Json(520), Json(500));
 
         var measurement = await detector.MeasureAsync(Frame(40, 200), T0, null, CancellationToken.None);
 
         Assert.Equal(0.5 * 720, measurement!.DoughTopPx, 6);
-        Assert.Equal(80 * 0.72, detector.LastDiagnostics!.SampleSpreadPx!.Value, 6);
+        Assert.Equal(40 * 0.72, detector.LastDiagnostics!.SampleSpreadPx!.Value, 6);
         Assert.Equal(3, detector.LastDiagnostics.SampleCount);
         Assert.Equal(1, detector.Spread.Cycles);
         Assert.Equal(1, detector.Spread.Noisy);
+    }
+
+    [Fact]
+    public async Task SamplesFarApart_RejectTheCycleInsteadOfTakingTheirMedian()
+    {
+        var detector = Sampling(Json(720), Json(716), Json(520));
+
+        var measurement = await detector.MeasureAsync(Frame(40, 200), T0, null, CancellationToken.None);
+
+        Assert.Null(measurement);
+        Assert.Equal("llm_rejected", detector.LastOutcome);
     }
 
     [Fact]

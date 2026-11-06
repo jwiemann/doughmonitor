@@ -49,17 +49,19 @@ public class SwitchableDetectorTests
     }
 
     [Fact]
-    public async Task ClassicDoughFloorIsDropped_SoBothDetectorsShareTheGlassBottomBasis()
+    public async Task ClassicDoughFloorStands_AndTheLlmGetsTheLastKnownFloor()
     {
-        var detector = new SwitchableDetector(new Fake("classic", 500, 700, floor: 680), new Fake("llm", 500, 700), null)
-        {
-            LlmEnabled = false
-        };
+        var classic = new Fake("classic", 500, 700, floor: 680);
+        var detector = new SwitchableDetector(classic, new Fake("llm", 480, 702), null) { LlmEnabled = false };
 
-        var measurement = await Measure(detector, 0);
+        var measured = await Measure(detector, 0);
+        detector.LlmEnabled = true;
+        var viaLlm = await Measure(detector, 5);
 
-        Assert.Null(measurement!.DoughFloorPx);
-        Assert.Equal(200, measurement.DoughHeightPx);
+        Assert.Equal(680, measured!.DoughFloorPx);
+        Assert.Equal(180, measured.DoughHeightPx);
+        Assert.Equal(680, viaLlm!.DoughFloorPx); // bottom held at 700, offset 20
+        Assert.Equal(200, viaLlm.DoughHeightPx);
     }
 
     [Fact]
