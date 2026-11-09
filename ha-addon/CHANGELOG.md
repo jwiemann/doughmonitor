@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.14
+
+- Peak forecast height: while the measured rate has not fallen below 90 % of its maximum, the forecast's point
+  estimate is pulled towards the usual peak (log-normal prior, `PeakPriorPercent` 100 for the starter,
+  `BreadPeakPriorPercent` 65 in Bread Mode, `PeakPriorSigma` 0.35). The fit alone put the peak just ahead of the
+  dough (81 % at +67 % on 2026-11-09, creeping up by 4 points an hour, with the rate still rising; earlier
+  forecasts of 37 to 56 % for peaks of 90 to 102 %). Replay of that day now: 87 % at +40 %, 96 % at +65 %, steady.
+  Whether a forecast is made, its time range and everything after the rate has fallen are unchanged.
+
 ## 0.4.13
 
 - Fixes the published rise freezing after a restart (2026-11-09: 13.6 % constant from 14:11, no lines in the debug

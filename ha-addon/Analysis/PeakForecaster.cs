@@ -34,6 +34,12 @@ public static class PeakForecaster
     /// weights the grid for the earliest/latest range (the point estimate uses the plain error).</summary>
     private const double NoiseInflation = 1.4;
 
+    /// <summary>With a peak prior the point estimate weights the grid with a still wider error: a rate model
+    /// this simple fits smooth, still rising dough to a few tenths of a percent, so with the plain error the
+    /// data alone decides and the prior has no say (replay 2026-11-09: 81 % at +63 %, creeping up by 4 points
+    /// an hour; 94 to 96 % and steady with inflation 3 to 5).</summary>
+    private const double PointNoiseInflation = 4;
+
     /// <summary>A forecast needs the rate maximum to lie at least this many hours in the past ...</summary>
     private const double MomentPastHours = 0.25;
 
@@ -76,7 +82,8 @@ public static class PeakForecaster
     /// 2026-10-15; until then the fit's estimate of when and at what rise the dough stopped is the
     /// answer, instead of an empty sensor.</summary>
     public static RateForecast? TryForecast(
-        IReadOnlyList<Sample> samples, DateTimeOffset now, double noiseFloorPercent, bool continuing)
+        IReadOnlyList<Sample> samples, DateTimeOffset now, double noiseFloorPercent, bool continuing,
+        double peakPriorPercent = 0, double peakPriorSigma = 0.35)
     {
         var buckets = Bucketize(samples, now);
         if (buckets.Count < MinBuckets) return null;
@@ -102,8 +109,24 @@ public static class PeakForecaster
         var hoursRange = WeightedQuantiles(peakHours, widened);
         var risesRange = WeightedQuantiles(peakRises, widened);
         // The point estimate follows the better-fitting models more closely than the range does.
-        var pointHours = WeightedQuantiles(peakHours, fitted).Median;
-        var pointRise = WeightedQuantiles(peakRises, fitted).Median;
+        var pointWeights = fitted;
+        if (peakPriorPercent > 0)
+        {
+            // Prior on the height of the peak, for the point estimate only (whether a forecast is made
+            // and its range stay as they were): while the rate has not turned, the data cannot tell a
+            // peak at +80 % from one at +120 %, and the fit alone then puts it just ahead of where the
+            // dough is (81 % at +67 % on 2026-11-09 with the rate still rising, earlier forecasts at 37
+            // to 56 % for peaks of 90 to 102 %). A log-normal prior around the usual peak, on a grid
+            // weighted with a wider error, fills in what the data leaves open.
+            pointWeights = Posterior(PointNoiseInflation);
+            for (var i = 0; i < cells.Count; i++)
+            {
+                var z = Math.Log(Math.Max(1, cells[i].Rise) / peakPriorPercent) / peakPriorSigma;
+                pointWeights[i] *= Math.Exp(-0.5 * z * z);
+            }
+        }
+        var pointHours = WeightedQuantiles(peakHours, pointWeights).Median;
+        var pointRise = WeightedQuantiles(peakRises, pointWeights).Median;
 
         var pastMass = 0.0;
         for (var i = 0; i < cells.Count; i++)

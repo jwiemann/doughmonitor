@@ -148,6 +148,19 @@ public sealed class AnalysisOptions
     /// moved unseen.</summary>
     public double BasisShiftMaxGapMinutes { get; init; } = 30;
 
+    /// <summary>Usual height of the peak (rise in percent) of the daily starter, the centre of the
+    /// log-normal prior of <see cref="PeakForecaster"/>. The 23 archive sessions of 2026-10 to 11 that
+    /// ran 4 hours or more peaked between 40 and 181 %, mostly 67 to 155 %, median about 93 %. Jens
+    /// expects the doubling for a starter.</summary>
+    public double PeakPriorPercent { get; init; } = 100;
+
+    /// <summary>The same for bread dough (Bread Mode), which is baked before the maximum: the
+    /// 2026-10-29 sample peaked at +65 %.</summary>
+    public double BreadPeakPriorPercent { get; init; } = 65;
+
+    /// <summary>Spread of the peak prior in log space: 0.35 is a factor 1.4 up and down at one sigma.</summary>
+    public double PeakPriorSigma { get; init; } = 0.35;
+
     /// <summary>Consecutive minutes of <c>no_surface</c> after a confirmed peak before the
     /// loss is reported in the diagnostics: a peaked session whose surface stays invisible
     /// for hours usually means the detector lost the surface (collapse?), not that the

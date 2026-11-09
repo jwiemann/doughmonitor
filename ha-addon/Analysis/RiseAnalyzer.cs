@@ -70,6 +70,10 @@ public sealed class RiseAnalyzer
         return new RiseReading(now, 0, null, null, null, null, null, false, NewSession: true);
     }
 
+    /// <summary>The peak prior applies while the current rate is at least this fraction of the
+    /// session's maximum rate.</summary>
+    private const double PeakPriorMinRateFraction = 0.9;
+
     /// <summary>Glass bottom minus dough floor of the last frame that measured the floor.</summary>
     private double? _lastFloorOffsetPx;
 
@@ -200,7 +204,13 @@ public sealed class RiseAnalyzer
             forecast = PeakForecaster.TryForecast(
                 _samples, m.Time, _options.RateNoiseFloorPx / baseline * 100.0 / 2,
                 continuing: _recentForecasts.Count > 0
-                            && (m.Time - _recentForecasts[^1].Time).TotalMinutes <= ContinuationMinutes);
+                            && (m.Time - _recentForecasts[^1].Time).TotalMinutes <= ContinuationMinutes,
+                // The prior only fills in while the measured rate has not fallen from its maximum; once
+                // it has, the data shows the turn and decides alone.
+                peakPriorPercent: slope is { } rateNow && rateNow >= PeakPriorMinRateFraction * _maximumSlope
+                    ? (BreadMode ? _options.BreadPeakPriorPercent : _options.PeakPriorPercent)
+                    : 0,
+                peakPriorSigma: _options.PeakPriorSigma);
         if (slope is not null) UpdatePeakState();
         if (_peaked) forecast = null;
         DateTimeOffset? eta = null, etaLow = null, etaHigh = null;
