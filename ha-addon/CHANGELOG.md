@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.15
+
+- Jar walls for a small dough sample: the tilted wall model (`JarGeometryEstimator`) needed about 90 rows of dough
+  below the surface and the wall tracker's prior, so a narrow jar with a 100 px sample stayed on two vertical
+  lines. It now also finds the glass edge above the dough where the textured wall (stucco) turns into smooth glass,
+  fits one line per wall over the whole jar, takes the measured column as prior when the tracker's fit disagrees
+  with it, and compares the frames at rows inside the measured span instead of at the frame edges. Replay of the
+  2026-11-09 evening frames: lines follow the tapering glass (left 504 to 521 px, right 832 to 823 px) instead of
+  520 and 815 vertical. Fits only while the wall has texture and the glass is smooth; otherwise unchanged.
+
 ## 0.4.14
 
 - Peak forecast height: while the measured rate has not fallen below 90 % of its maximum, the forecast's point

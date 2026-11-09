@@ -1961,7 +1961,7 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
     {
         LastDebugImagePath = null;
         if (doughSurfaceY is { } observedSurface && jarBottomY is { } observedFloor)
-            _geometry.Observe(image, observedSurface, observedFloor, _walls.Latest);
+            _geometry.Observe(image, observedSurface, observedFloor, WallPrior(jarColumn, observedSurface));
         if (LastDiagnostics is { } diagnostics)
         {
             LastDiagnostics = diagnostics with
@@ -2039,6 +2039,20 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
         LastDebugImagePath = filePath;
         AppendDiagnosticsLogEntry(directory, Path.GetFileName(filePath), jarColumn, doughSurfaceY, jarBottomY, sessionStartSurfaceY, now);
         PruneOldDebugFiles(directory, now);
+    }
+
+    /// <summary>Where <see cref="JarGeometryEstimator"/> looks for the walls: the wall tracker's
+    /// latest fit while it agrees with the measured column (a few tens of pixels), otherwise the
+    /// column itself as vertical walls. The tracker lags after the jar is swapped and rejects jars
+    /// narrower or less tapered than its limits; the column always follows the dough.</summary>
+    private JarWalls? WallPrior(JarColumn? column, int surfaceRow)
+    {
+        if (column is not { } c || c.Kind == "fallback") return _walls.Latest;
+        if (_walls.Latest is { } latest
+            && Math.Abs(latest.LeftAt(surfaceRow) - c.Left) <= 30
+            && Math.Abs(latest.RightAt(surfaceRow) - c.Right) <= 30)
+            return latest;
+        return new JarWalls(c.Left, 0, c.Right, 0, surfaceRow, 1.0, 0);
     }
 
     /// <summary>Draws the traced surface curve as a red polyline (the level plane inside
