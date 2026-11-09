@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.17
+
+- The classic detector's debug image (MQTT and `debug/` folder) is cropped to the jar with 30 % of its width of wall
+  around it and scaled up (at most 1280 x 960) instead of showing the whole frame. Frames without a measured jar
+  stay whole.
+
 ## 0.4.16
 
 - The wall lines in the debug image start at the glass rim (measured as the first row between the walls where the

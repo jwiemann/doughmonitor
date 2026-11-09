@@ -2025,7 +2025,10 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
                 SessionStartLineColor,
                 1);
         }
-        Cv2.ImEncode(".jpg", color, out var bytes);
+        // Zoom on the jar: the whole frame is mostly wall, and the lines are what is being judged.
+        using var zoomed = ZoomOnJar(color, jarColumn, _geometry);
+        var annotated = zoomed ?? color;
+        Cv2.ImEncode(".jpg", annotated, out var bytes);
         LatestAnnotatedImageBytes = bytes;
         if (!options.DebugSaveAnnotatedImages) return;
         var directory = ResolveDebugDirectory();
@@ -2037,10 +2040,40 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
         {
             filePath = Path.Combine(directory, $"{now:yyyyMMdd_HHmmssfff}_{index}.jpg");
         }
-        Cv2.ImWrite(filePath, color);
+        Cv2.ImWrite(filePath, annotated);
         LastDebugImagePath = filePath;
         AppendDiagnosticsLogEntry(directory, Path.GetFileName(filePath), jarColumn, doughSurfaceY, jarBottomY, sessionStartSurfaceY, now);
         PruneOldDebugFiles(directory, now);
+    }
+
+    /// <summary>The annotated frame cropped to the jar with some wall around it and scaled up (at most
+    /// to 1280 x 960); null when there is no measured jar, so the whole frame is kept.</summary>
+    private static Mat? ZoomOnJar(Mat color, JarColumn? column, JarGeometryEstimator geometry)
+    {
+        if (column is not { } c || c.Kind == "fallback") return null;
+        var top = geometry.TopRow ?? Math.Max(c.Top, 0);
+        var bottom = Math.Min(c.Bottom, color.Height - 1);
+        double left = c.Left, right = c.Right;
+        if (geometry.Walls is { } walls)
+        {
+            left = Math.Min(walls.LeftAt(top), walls.LeftAt(bottom));
+            right = Math.Max(walls.RightAt(top), walls.RightAt(bottom));
+        }
+        var width = right - left;
+        if (width < 40 || bottom - top < 40) return null;
+        var padX = width * 0.3;
+        var x0 = (int)Math.Max(0, left - padX);
+        var x1 = (int)Math.Min(color.Width, right + padX);
+        var y0 = Math.Max(0, top - 40);
+        var y1 = Math.Min(color.Height, bottom + 40);
+        if (x1 - x0 < 80 || y1 - y0 < 80) return null;
+        using var crop = new Mat(color, new Rect(x0, y0, x1 - x0, y1 - y0));
+        var scale = Math.Min(1280.0 / crop.Width, 960.0 / crop.Height);
+        if (scale <= 1.05) return crop.Clone();
+        var zoomed = new Mat();
+        Cv2.Resize(crop, zoomed, new Size((int)Math.Round(crop.Width * scale), (int)Math.Round(crop.Height * scale)),
+            0, 0, InterpolationFlags.Cubic);
+        return zoomed;
     }
 
     /// <summary>Where <see cref="JarGeometryEstimator"/> looks for the walls: the wall tracker's
