@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.13
+
+- Fixes the published rise freezing after a restart (2026-11-09: 13.6 % constant from 14:11, no lines in the debug
+  image). Two causes, both reproduced by replaying the frames from the restart on:
+  1. A session on the dough-floor basis turned every frame without a floor reading into "unavailable" (53 of 60
+     frames in the replay), and the detector measures the floor only now and then. Such frames now take the floor
+     from the last measured offset (glass bottom less offset, the measurement's own definition); the offset is
+     persisted with the session. The old rule "a floor session never takes a glass-bottom height" is gone.
+  2. The detector keeps no state across restarts (last surface, floor offset, jar columns); in the dim evening
+     frames it found no surface at all (method "none"). With a restored session the last 6 hours of the archive are
+     now replayed through the detector at startup (the analyzer skips what it has seen and takes the frames from the
+     downtime; scene changes in that replay are ignored so they cannot reset the restored session).
+
 ## 0.4.12
 
 - The session is rebuilt from the snapshot archive at startup when no session was restored (`ArchiveBackfill`):

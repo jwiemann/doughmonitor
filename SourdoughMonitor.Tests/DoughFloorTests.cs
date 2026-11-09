@@ -77,14 +77,18 @@ public class DoughFloorTests
     }
 
     [Fact]
-    public void Analyze_FloorSessionDoesNotAcceptAGlassBottomHeight()
+    public void Analyze_FloorSessionTakesAGlassBottomFrameWithTheCarriedFloorOffset()
     {
         var analyzer = NewAnalyzer();
         analyzer.Analyze(OnFloor(Start, 100));
 
-        Assert.Null(analyzer.Analyze(GlassBottomOnly(Start.AddMinutes(1), 125)));
+        // The frame has no floor of its own: the floor is the glass bottom less the 20 px of the last
+        // frame that measured it, so 125 px from the glass bottom are 105 px from the floor.
+        var carried = analyzer.Analyze(GlassBottomOnly(Start.AddMinutes(1), 125));
         var next = analyzer.Analyze(OnFloor(Start.AddMinutes(2), 110));
 
+        Assert.NotNull(carried);
+        Assert.Equal(5, carried!.RisePercent);
         Assert.NotNull(next);
         Assert.Equal(10, next!.RisePercent);
     }
@@ -99,7 +103,7 @@ public class DoughFloorTests
 
             var restored = NewAnalyzer(statePath);
 
-            Assert.Null(restored.Analyze(GlassBottomOnly(Start.AddMinutes(1), 125)));
+            Assert.Equal(5, restored.Analyze(GlassBottomOnly(Start.AddMinutes(1), 125))!.RisePercent);
             Assert.Equal(10, restored.Analyze(OnFloor(Start.AddMinutes(2), 110))!.RisePercent);
         }
         finally

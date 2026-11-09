@@ -28,6 +28,10 @@ public sealed class Worker(
 
     private bool _lossWarned;
 
+    /// <summary>Set while the detector replays recent archive frames next to a restored session: a
+    /// scene change found in the past must not reset the session that was just restored.</summary>
+    private bool _warmingUpRestoredSession;
+
     /// <summary>"Bread mode" gates the oven-preheat signal: feeding the daily starter must not warn about an oven.
     /// It is persisted so a restart keeps the choice; the default is off.</summary>
     private bool LoadBreadMode()
@@ -90,6 +94,7 @@ public sealed class Worker(
         // the new jar/base/surface; lighting and sampling-resolution changes retain it.
         detector.SceneChanged += () =>
         {
+            if (_warmingUpRestoredSession) return;
             logger.LogWarning("Jar geometry changed (camera moved/bumped); resetting rise session");
             _ = analyzer.Reset();
             _wallHeight.Reset();
@@ -132,15 +137,20 @@ public sealed class Worker(
         while (await timer.WaitForNextTickAsync(ct));
     }
 
-    /// <summary>Without a restored session (first start of this version, a lost state file) the
-    /// session is rebuilt from the snapshot archive, so an update does not throw away the hours
-    /// already measured. Classic detection only: replaying a day of frames through the paid vision
-    /// model would cost a day's budget. Best effort; failure leaves a fresh session.</summary>
+    /// <summary>Replays archived frames through the classic detector and the analyzer before live
+    /// sampling starts. Without a restored session (first start of this version, a lost state file)
+    /// the whole session is rebuilt from the last <see cref="AnalysisOptions.MaxSessionHours"/>.
+    /// With a restored session only the last hours are replayed: the detector keeps no state across
+    /// restarts (last surface, dough floor, jar columns), and without it the evening frames after a
+    /// restart find no surface at all (2026-11-09 15:40: method "none", no lines in the debug image);
+    /// the analyzer ignores frames it has already seen and takes those from the downtime. Classic
+    /// detection only: replaying frames through the paid vision model would cost a day's budget.
+    /// Best effort; failure leaves the live state as it is.</summary>
     private async Task BackfillSessionAsync(CancellationToken ct)
     {
-        if (analyzer.BaselineDoughHeightPx is not null) return;
         var configured = options.Frigate.SnapshotArchiveDirectory;
         if (string.IsNullOrWhiteSpace(configured)) return;
+        var restored = analyzer.BaselineDoughHeightPx is not null;
         var directory = Path.IsPathFullyQualified(configured)
             ? configured
             : Path.Combine(AppContext.BaseDirectory, configured);
@@ -148,22 +158,26 @@ public sealed class Worker(
         try
         {
             detector.LlmEnabled = false;
+            _warmingUpRestoredSession = restored;
             var started = DateTimeOffset.UtcNow;
             var result = await ArchiveBackfill.RunAsync(
-                directory, detector, analyzer, started, TimeSpan.FromHours(options.Analysis.MaxSessionHours), ct);
+                directory, detector, analyzer, started,
+                restored ? TimeSpan.FromHours(6) : TimeSpan.FromHours(options.Analysis.MaxSessionHours), ct);
             logger.LogWarning(
-                "Session rebuilt from the snapshot archive: {Frames} frames, {Measured} measured, {Seconds:F0} s; "
+                "{What} from the snapshot archive: {Frames} frames, {Measured} measured, {Seconds:F0} s; "
                 + "session start {Start:u} ({Reason})",
-                result.Frames, result.Measured, (DateTimeOffset.UtcNow - started).TotalSeconds,
+                restored ? "Detector warmed up" : "Session rebuilt", result.Frames, result.Measured,
+                (DateTimeOffset.UtcNow - started).TotalSeconds,
                 result.LastReading?.SessionStart, analyzer.LastSessionStartReason ?? "none");
             if (result.LastReading is { } reading) await TrackPublishedAsync(reading, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogWarning(ex, "Could not rebuild the session from the snapshot archive; starting a fresh session");
+            logger.LogWarning(ex, "Could not replay the snapshot archive; continuing with the live state");
         }
         finally
         {
+            _warmingUpRestoredSession = false;
             detector.LlmEnabled = llmWasEnabled;
         }
     }

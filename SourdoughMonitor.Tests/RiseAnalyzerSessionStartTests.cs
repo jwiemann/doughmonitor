@@ -121,4 +121,23 @@ public class RiseAnalyzerSessionStartTests
         Assert.NotNull(moved);
         Assert.InRange(moved!.RisePercent, 0, 5);
     }
+
+    [Fact]
+    public void FloorBasedSession_KeepsReadingOnFramesWithoutAFloor()
+    {
+        // The floor is measured now and then (25 px above the glass bottom); in between the frame
+        // carries none. Those frames must not turn the whole session unavailable.
+        var analyzer = NewAnalyzer();
+        RiseReading? last = null;
+        for (var step = 0; step < 20; step++)
+        {
+            double? floor = step % 6 == 0 ? 375 : null;
+            last = analyzer.Analyze(new LevelMeasurement(Start.AddMinutes(step * 5), 300 - step, 0, 400, floor)) ?? last;
+        }
+
+        var unfloored = analyzer.Analyze(new LevelMeasurement(Start.AddMinutes(20 * 5), 300 - 20, 0, 400));
+
+        Assert.NotNull(unfloored);
+        Assert.InRange(unfloored!.RisePercent, 15, 40);
+    }
 }

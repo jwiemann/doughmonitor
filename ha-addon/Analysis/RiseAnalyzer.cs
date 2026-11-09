@@ -70,6 +70,9 @@ public sealed class RiseAnalyzer
         return new RiseReading(now, 0, null, null, null, null, null, false, NewSession: true);
     }
 
+    /// <summary>Glass bottom minus dough floor of the last frame that measured the floor.</summary>
+    private double? _lastFloorOffsetPx;
+
     /// <summary>The height basis (dough floor, else glass bottom) and surface row of the last accepted
     /// measurement: a change of the basis that the surface does not follow is a re-estimate of the
     /// jar, not growth (see <see cref="AnalysisOptions.BasisShiftMinPx"/>).</summary>
@@ -106,6 +109,14 @@ public sealed class RiseAnalyzer
     public RiseReading? Analyze(LevelMeasurement m)
     {
         if (_lastMeasurementTime is { } lastTime && m.Time <= lastTime) return null;
+        // The detector measures the dough floor only on some frames. A session already on the floor
+        // basis must not stall on the others (replay of the 2026-11-09 restart: every frame after a
+        // single floor reading was "unavailable" for hours, the published rise froze at 13.6 %):
+        // such a frame gets the floor from the last measured offset, as the measurement's own
+        // definition says (glass bottom less the scene's offset).
+        if (m.DoughFloorPx is { } measuredFloor) _lastFloorOffsetPx = m.JarBottomPx - measuredFloor;
+        else if (_baselineOnDoughFloor && _lastFloorOffsetPx is { } carriedOffset)
+            m = m with { DoughFloorPx = m.JarBottomPx - carriedOffset };
         if (m.DoughHeightPx < _options.MinPlausibleHeightPx) return null;
         if (TakeJarRemovedMinutes() is { } removedMinutes && _baselineDoughHeightPx is not null)
             return StartMeasuredSession(m.Time, m.DoughHeightPx, m.OnDoughFloor,
@@ -643,7 +654,8 @@ public sealed class RiseAnalyzer
             _sessionStart,
             _peaked,
             _peakReferenceRisePercent,
-            _baselineOnDoughFloor);
+            _baselineOnDoughFloor,
+            _lastFloorOffsetPx);
         var path = ResolvePath(_options.StateFilePath);
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
@@ -667,6 +679,7 @@ public sealed class RiseAnalyzer
             foreach (var slope in _slopes) _maximumSlope = Math.Max(_maximumSlope, slope.Slope);
             _baselineDoughHeightPx = state.BaselineDoughHeightPx;
             _baselineOnDoughFloor = state.BaselineOnDoughFloor;
+            _lastFloorOffsetPx = state.LastFloorOffsetPx;
             _sessionStart = state.SessionStart;
             _peaked = state.Peaked;
             _peakReferenceRisePercent = state.PeakReferenceRisePercent;
@@ -705,5 +718,6 @@ public sealed class RiseAnalyzer
         DateTimeOffset SessionStart,
         bool Peaked,
         double? PeakReferenceRisePercent = null,
-        bool BaselineOnDoughFloor = false);
+        bool BaselineOnDoughFloor = false,
+        double? LastFloorOffsetPx = null);
 }
