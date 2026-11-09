@@ -14,7 +14,7 @@ public sealed class JarGeometryEstimator
 {
     private const int History = 24;
     private const int MinObservations = 5;
-    private const double MaxSpreadPx = 4.0;
+    private const double MaxSpreadPx = 8.0;
     private const int RowStep = 4;
     private const int Window = 45;
     private const double MinEdgeStrength = 10;
@@ -27,6 +27,9 @@ public sealed class JarGeometryEstimator
     private const double TopRef = 0.25, BottomRef = 0.85;
     /// <summary>How far above the dough surface (fraction of the frame height) wall texture is searched.</summary>
     private const double TextureSpan = 0.45;
+    /// <summary>A texture line steeper than this is a lamp's glow or the dough, not a glass wall (jar walls lean
+    /// by 0.03 to 0.14).</summary>
+    private const double MaxTextureSlope = 0.15;
     private const double MinTextureEnergy = 2.5;
     private const double TextureRatio = 3.0;
 
@@ -107,6 +110,8 @@ public sealed class JarGeometryEstimator
         // glass above it still separates from the wall by texture (see TextureEdgeNear), which
         // extends the line over the whole jar. The points are shifted so the common outward
         // offset below lands them on the glass edge itself.
+        var leftTexture = new List<(double Y, double X)>();
+        var rightTexture = new List<(double Y, double X)>();
         var textureFrom = Math.Max(4, surfaceRow - (int)(height * TextureSpan));
         var textureTo = surfaceRow - Math.Max(20, height / 36);
         if (textureTo - textureFrom >= height / 8)
@@ -114,14 +119,22 @@ public sealed class JarGeometryEstimator
             using var detail = DetailEnergy(gray);
             for (var y = textureFrom; y <= textureTo; y += RowStep)
             {
-                if (TextureEdgeNear(detail, y, prior.LeftAt(y), outerIsLeft: true) is { } l) left.Add((y, l + OutwardPx));
-                if (TextureEdgeNear(detail, y, prior.RightAt(y), outerIsLeft: false) is { } r) right.Add((y, r - OutwardPx));
+                if (TextureEdgeNear(detail, y, prior.LeftAt(y), outerIsLeft: true) is { } l) leftTexture.Add((y, l + OutwardPx));
+                if (TextureEdgeNear(detail, y, prior.RightAt(y), outerIsLeft: false) is { } r) rightTexture.Add((y, r - OutwardPx));
             }
         }
-        if (left.Count == 0 || right.Count == 0) return;
-        var span = Math.Min(left.Max(p => p.Y) - left.Min(p => p.Y), right.Max(p => p.Y) - right.Min(p => p.Y));
-        if (span < height / 6.0) return;
-        if (FitLine(left) is not { } leftLine || FitLine(right) is not { } rightLine) return;
+        // The dough edge sits inside the glass wall, by more than OutwardPx on a thick-walled jar,
+        // so mixing both kinds of points bends the line. The texture points alone mark the outer
+        // glass edge and win whenever they span enough of the jar by themselves.
+        var minSpan = height / 6.0;
+        Line? Fit(List<(double Y, double X)> texture, List<(double Y, double X)> dough)
+        {
+            if (Span(texture) >= minSpan && FitLine(texture) is { } textureLine && Math.Abs(textureLine.Slope) <= MaxTextureSlope)
+                return textureLine;
+            var all = dough.Concat(texture).ToList();
+            return Span(all) >= minSpan ? FitLine(all) : null;
+        }
+        if (Fit(leftTexture, left) is not { } leftLine || Fit(rightTexture, right) is not { } rightLine) return;
         if (rightLine.At(height / 2.0) - leftLine.At(height / 2.0) < gray.Width / 12.0) return;
 
         var observation = (
@@ -168,7 +181,7 @@ public sealed class JarGeometryEstimator
         {
             // Spread of the middle of the distribution: the outermost value on either side may
             // be the odd frame.
-            var trim = values.Length >= 8 ? 1 : 0;
+            var trim = values.Length >= 8 ? values.Length / 5 : 0;
             if (values[values.Length - 1 - trim] - values[trim] > MaxSpreadPx * 2) return null;
         }
         double Median(double[] v) => v[v.Length / 2];
@@ -251,6 +264,9 @@ public sealed class JarGeometryEstimator
         return bestX >= 0 ? bestX : null;
     }
 
+    private static double Span(List<(double Y, double X)> points) =>
+        points.Count == 0 ? 0 : points.Max(p => p.Y) - points.Min(p => p.Y);
+
     private readonly record struct Line(double Intercept, double Slope)
     {
         public double At(double y) => Intercept + Slope * y;
@@ -261,18 +277,21 @@ public sealed class JarGeometryEstimator
     private static Line? FitLine(List<(double Y, double X)> points)
     {
         if (points.Count < 10) return null;
-        var slopes = new List<double>();
+        // Consensus: the line through two points that most points agree with. Edge points from rows
+        // next to a lamp or other glow can be half of the set, which a median slope cannot survive.
+        List<(double Y, double X)>? inliers = null;
         for (var i = 0; i < points.Count; i++)
         for (var j = i + 1; j < points.Count; j++)
-            if (points[j].Y - points[i].Y >= 40)
-                slopes.Add((points[j].X - points[i].X) / (points[j].Y - points[i].Y));
-        if (slopes.Count == 0) return null;
-        slopes.Sort();
-        var slope = slopes[slopes.Count / 2];
-        var intercepts = points.Select(p => p.X - slope * p.Y).OrderBy(v => v).ToList();
-        var line = new Line(intercepts[intercepts.Count / 2], slope);
-        var inliers = points.Where(p => Math.Abs(p.X - line.At(p.Y)) <= InlierPx).ToList();
-        if (inliers.Count < 10 || inliers.Count < points.Count * 0.5) return null;
+        {
+            var dy = points[j].Y - points[i].Y;
+            if (dy < 40) continue;
+            var slope = (points[j].X - points[i].X) / dy;
+            if (Math.Abs(slope) > MaxSlope) continue;
+            var line = new Line(points[i].X - slope * points[i].Y, slope);
+            var agreeing = points.Where(p => Math.Abs(p.X - line.At(p.Y)) <= InlierPx).ToList();
+            if (inliers is null || agreeing.Count > inliers.Count) inliers = agreeing;
+        }
+        if (inliers is null || inliers.Count < 10 || inliers.Count < points.Count * 0.4) return null;
         // Least squares over the inliers.
         var my = inliers.Average(p => p.Y);
         var mx = inliers.Average(p => p.X);

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.18
+
+- Wall lines for a jar with a lamp or other glow behind it (2026-11-09 evening, the Saatenbrot sample): the wall fit
+  takes the line most edge points agree with (consensus of point pairs) instead of the median slope, which half
+  spurious points from the rows beside the lamp bent to a slope of 0.22. A texture line steeper than 0.15 counts as
+  a glow, not a wall, and the dough-edge points only join when the texture alone does not span a sixth of the
+  frame (dough edge and glass edge differ by the glass thickness, so mixing them bent the line). The frame
+  scatter of a wall point allowed for the model grew from 4 to 8 px and its outermost fifth is ignored, so stale
+  observations from before the jar moved no longer block the model. Replay of both positions of the jar that
+  evening: tilted lines on the glass.
+
 ## 0.4.17
 
 - The classic detector's debug image (MQTT and `debug/` folder) is cropped to the jar with 30 % of its width of wall
