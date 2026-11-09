@@ -1995,15 +1995,17 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
             var tilted = jarColumn.Kind == "fallback" ? null : _geometry.Walls;
             double LeftAt(int y) => tilted?.LeftAt(y) ?? jarColumn.Left;
             double RightAt(int y) => tilted?.RightAt(y) ?? jarColumn.Right;
+            // The search area starts well above the jar; the measured rim row is where the glass does.
+            var topRow = tilted is not null && _geometry.TopRow is { } rim ? rim : jarColumn.Top;
             Cv2.Line(
                 color,
-                new Point((int)Math.Round(LeftAt(jarColumn.Top)), jarColumn.Top),
+                new Point((int)Math.Round(LeftAt(topRow)), topRow),
                 new Point((int)Math.Round(LeftAt(jarColumn.Bottom)), jarColumn.Bottom),
                 wallColor,
                 thickness);
             Cv2.Line(
                 color,
-                new Point((int)Math.Round(RightAt(jarColumn.Top)), jarColumn.Top),
+                new Point((int)Math.Round(RightAt(topRow)), topRow),
                 new Point((int)Math.Round(RightAt(jarColumn.Bottom)), jarColumn.Bottom),
                 wallColor,
                 thickness);

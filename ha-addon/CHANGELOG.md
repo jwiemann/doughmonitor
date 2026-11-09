@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.16
+
+- The wall lines in the debug image start at the glass rim (measured as the first row between the walls where the
+  mean intensity jumps against the even wall behind it) instead of at the search area's top row.
+- A moved jar restarts the wall model: three frames in a row 15 px or more away from the model's median clear the
+  history; before, the old observations kept the model empty for up to two hours (24 frames). A wall line now needs
+  half instead of 60 % of its edge points to agree.
+
 ## 0.4.15
 
 - Jar walls for a small dough sample: the tilted wall model (`JarGeometryEstimator`) needed about 90 rows of dough

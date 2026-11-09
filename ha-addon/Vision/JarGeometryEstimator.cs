@@ -32,15 +32,52 @@ public sealed class JarGeometryEstimator
 
     private readonly Queue<(double LeftTop, double LeftBottom, double RightTop, double RightBottom)> _history = new();
     private int _frameHeight;
+    private int _moved;
+    /// <summary>A frame this far from the model's median at the top reference row counts as a moved jar.</summary>
+    private const double MovedPx = 15;
+    private readonly Queue<int> _tops = new();
+    /// <summary>Jump of the row mean over six rows that marks the rim.</summary>
+    private const double RimJump = 25;
 
     /// <summary>The model the recent frames agree on, or null while there are too few or
     /// contradicting observations.</summary>
     public JarWalls? Walls { get; private set; }
 
+    /// <summary>The row of the glass rim's upper edge (median of the recent frames), or null.</summary>
+    public int? TopRow { get; private set; }
+
     public void Reset()
     {
         _history.Clear();
+        _tops.Clear();
         Walls = null;
+        TopRow = null;
+    }
+
+    /// <summary>The first row, scanning down from the frame top, where the mean intensity between the
+    /// walls jumps (the bright rim ridge against the even wall behind it); null when no row jumps.</summary>
+    private static int? GlassTop(Mat gray, Line leftLine, Line rightLine, int surfaceRow)
+    {
+        var last = Math.Min(surfaceRow, gray.Height - 5);
+        var means = new double[last + 1];
+        for (var y = 0; y <= last; y++)
+        {
+            var x0 = (int)Math.Round(leftLine.At(y)) + 25;
+            var x1 = (int)Math.Round(rightLine.At(y)) - 25;
+            if (x0 < 0 || x1 >= gray.Width || x1 - x0 < 40) return null;
+            var sum = 0;
+            for (var x = x0; x <= x1; x++) sum += gray.At<byte>(y, x);
+            means[y] = sum / (double)(x1 - x0 + 1);
+        }
+        for (var y = 6; y + 6 <= last; y++)
+        {
+            if (Math.Abs(means[y + 3] - means[y - 3]) < RimJump) continue;
+            var bestY = y;
+            for (var k = y; k < Math.Min(y + 8, last - 3); k++)
+                if (Math.Abs(means[k + 3] - means[k - 3]) > Math.Abs(means[bestY + 3] - means[bestY - 3])) bestY = k;
+            return bestY;
+        }
+        return null;
     }
 
     /// <summary>Adds the measurement of one frame. <paramref name="surfaceRow"/> and
@@ -87,10 +124,34 @@ public sealed class JarGeometryEstimator
         if (FitLine(left) is not { } leftLine || FitLine(right) is not { } rightLine) return;
         if (rightLine.At(height / 2.0) - leftLine.At(height / 2.0) < gray.Width / 12.0) return;
 
-        _history.Enqueue((
-            leftLine.At(height * TopRef) - OutwardPx, leftLine.At(height * BottomRef) - OutwardPx,
-            rightLine.At(height * TopRef) + OutwardPx, rightLine.At(height * BottomRef) + OutwardPx));
+        var observation = (
+            LeftTop: leftLine.At(height * TopRef) - OutwardPx, LeftBottom: leftLine.At(height * BottomRef) - OutwardPx,
+            RightTop: rightLine.At(height * TopRef) + OutwardPx, RightBottom: rightLine.At(height * BottomRef) + OutwardPx);
+        // A moved jar: the recent frames agree with each other but not with the older ones. Three in
+        // a row away from the model's median start it afresh instead of waiting hours for the old
+        // observations to age out.
+        if (_history.Count >= MinObservations)
+        {
+            var median = _history.Select(h => h.LeftTop).OrderBy(v => v).ElementAt(_history.Count / 2);
+            var medianRight = _history.Select(h => h.RightTop).OrderBy(v => v).ElementAt(_history.Count / 2);
+            _moved = Math.Abs(observation.LeftTop - median) > MovedPx || Math.Abs(observation.RightTop - medianRight) > MovedPx
+                ? _moved + 1 : 0;
+            if (_moved >= 3)
+            {
+                _history.Clear();
+                _tops.Clear();
+                TopRow = null;
+                _moved = 0;
+            }
+        }
+        _history.Enqueue(observation);
         while (_history.Count > History) _history.Dequeue();
+        if (GlassTop(gray, leftLine, rightLine, surfaceRow) is { } top)
+        {
+            _tops.Enqueue(top);
+            while (_tops.Count > History) _tops.Dequeue();
+            TopRow = _tops.Count >= MinObservations ? _tops.OrderBy(v => v).ElementAt(_tops.Count / 2) : null;
+        }
         Walls = Consolidate(height);
     }
 
@@ -211,7 +272,7 @@ public sealed class JarGeometryEstimator
         var intercepts = points.Select(p => p.X - slope * p.Y).OrderBy(v => v).ToList();
         var line = new Line(intercepts[intercepts.Count / 2], slope);
         var inliers = points.Where(p => Math.Abs(p.X - line.At(p.Y)) <= InlierPx).ToList();
-        if (inliers.Count < 10 || inliers.Count < points.Count * 0.6) return null;
+        if (inliers.Count < 10 || inliers.Count < points.Count * 0.5) return null;
         // Least squares over the inliers.
         var my = inliers.Average(p => p.Y);
         var mx = inliers.Average(p => p.X);
