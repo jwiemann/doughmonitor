@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.9
+
+- The rise session and the jar geometry now survive add-on updates: `sourdough_state.json` and `jar_geometry.json`
+  were relative paths under `/app` (part of the image, recreated on every update), so each update silently started
+  a new session. `run.sh` now points both to `/data`. The first update to this version still starts a fresh session;
+  later updates and restarts keep it.
+
 ## 0.4.8
 
 - Tilted jar walls (`JarGeometryEstimator`): the glass walls are measured on the dough silhouette (strongest

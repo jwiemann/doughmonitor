@@ -45,6 +45,10 @@ export Monitor__Llm__UsageFilePath="/data/llm_usage.json"
 export Monitor__Analysis__TargetRisePercent="$(jq -r '.target_rise_percent // 100' "$CONFIG_PATH")"
 export Monitor__Analysis__BreadTargetRisePercent="$(jq -r '.bread_target_rise_percent // 50' "$CONFIG_PATH")"
 export Monitor__Analysis__BreadModeFilePath="/data/bread_mode.txt"
+# Session (baseline, samples, peak) and jar geometry must survive add-on updates: relative paths
+# resolve under /app, which is recreated with the image on every update.
+export Monitor__Analysis__StateFilePath="/data/sourdough_state.json"
+export Monitor__Vision__GeometryStateFilePath="/data/jar_geometry.json"
 export Monitor__Analysis__OvenPreheatLeadMinutes="$(jq -r '.oven_preheat_lead_minutes // 30' "$CONFIG_PATH")"
 
 # --- OpenCvSharp native libraries ---
