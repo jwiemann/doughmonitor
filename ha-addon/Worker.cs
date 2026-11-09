@@ -116,6 +116,7 @@ public sealed class Worker(
         {
             logger.LogWarning(ex, "Could not publish the LLM detection switch state");
         }
+        await BackfillSessionAsync(ct);
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(options.Frigate.SampleIntervalMinutes));
         do
         {
@@ -129,6 +130,42 @@ public sealed class Worker(
             }
         }
         while (await timer.WaitForNextTickAsync(ct));
+    }
+
+    /// <summary>Without a restored session (first start of this version, a lost state file) the
+    /// session is rebuilt from the snapshot archive, so an update does not throw away the hours
+    /// already measured. Classic detection only: replaying a day of frames through the paid vision
+    /// model would cost a day's budget. Best effort; failure leaves a fresh session.</summary>
+    private async Task BackfillSessionAsync(CancellationToken ct)
+    {
+        if (analyzer.BaselineDoughHeightPx is not null) return;
+        var configured = options.Frigate.SnapshotArchiveDirectory;
+        if (string.IsNullOrWhiteSpace(configured)) return;
+        var directory = Path.IsPathFullyQualified(configured)
+            ? configured
+            : Path.Combine(AppContext.BaseDirectory, configured);
+        var llmWasEnabled = detector.LlmEnabled;
+        try
+        {
+            detector.LlmEnabled = false;
+            var started = DateTimeOffset.UtcNow;
+            var result = await ArchiveBackfill.RunAsync(
+                directory, detector, analyzer, started, TimeSpan.FromHours(options.Analysis.MaxSessionHours), ct);
+            logger.LogWarning(
+                "Session rebuilt from the snapshot archive: {Frames} frames, {Measured} measured, {Seconds:F0} s; "
+                + "session start {Start:u} ({Reason})",
+                result.Frames, result.Measured, (DateTimeOffset.UtcNow - started).TotalSeconds,
+                result.LastReading?.SessionStart, analyzer.LastSessionStartReason ?? "none");
+            if (result.LastReading is { } reading) await TrackPublishedAsync(reading, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not rebuild the session from the snapshot archive; starting a fresh session");
+        }
+        finally
+        {
+            detector.LlmEnabled = llmWasEnabled;
+        }
     }
 
     private async Task SampleOnceAsync(CancellationToken ct)

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.12
+
+- The session is rebuilt from the snapshot archive at startup when no session was restored (`ArchiveBackfill`):
+  the frames of the last `max_session_hours` (36) go through the classic detector and the analyzer with their own
+  capture times; nothing is published during the rebuild and the vision LLM is never called for it. With a restored
+  session (0.4.9 and later) the backfill is skipped. Needs `snapshot_archive_directory` (the same archive the replay
+  reads). The first update to a version with this still starts from the archive, so the 2026-11-09 08:12 jar swap
+  is found again instead of a fresh session at the first frame after the update.
+- A re-estimate of the height basis (dough floor, else glass bottom) of at least `BasisShiftMinPx` (6 px) that the
+  surface does not follow (it moved by at most 30 % of the shift, gap up to `BasisShiftMaxGapMinutes` 30) rebases the
+  session instead of counting as rise: on 2026-11-09 the basis went 656 to 694 px at a constant surface row, the rise
+  jumped 5 to 18 % and the rate swung between 1.5 and 14 %/h. Replay of that day: +20 % at 13:21 instead of +40 %, a
+  continuous curve. Whole archive: 55 to 54 sessions, three false restarts gone, +150 % readings 1851 to 1454.
+
 ## 0.4.11
 
 - A removed jar starts a new session. A lit, uniform frame that no longer resembles the last scene (normalised

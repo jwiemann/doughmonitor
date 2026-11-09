@@ -70,6 +70,12 @@ public sealed class RiseAnalyzer
         return new RiseReading(now, 0, null, null, null, null, null, false, NewSession: true);
     }
 
+    /// <summary>The height basis (dough floor, else glass bottom) and surface row of the last accepted
+    /// measurement: a change of the basis that the surface does not follow is a re-estimate of the
+    /// jar, not growth (see <see cref="AnalysisOptions.BasisShiftMinPx"/>).</summary>
+    private double? _lastBasisPx;
+    private double? _lastRowPx;
+
     private DateTimeOffset? _emptyFirst;
     private DateTimeOffset? _emptyLast;
 
@@ -121,7 +127,21 @@ public sealed class RiseAnalyzer
                 return StartMeasuredSession(m.Time, m.DoughHeightPx, true,
                     $"dough floor offset {m.JarBottomPx - m.DoughFloorPx!.Value:F0} px implausible for the running session");
             baseline = rebased.Value;
+            _lastBasisPx = null;
         }
+
+        // The detector re-estimates the glass bottom and the dough floor now and then (archive
+        // 2026-11-09: 656, 664 and 694 px within two hours while the surface row stood at 430). The
+        // heights then jump by the shift: counted as growth it inflated the rise by 13 points and made
+        // the rate swing from 1.5 to 14 %/h and back. A shift the surface does not follow is rebased.
+        var basisPx = m.DoughFloorPx ?? m.JarBottomPx;
+        if (_lastBasisPx is { } previousBasis && _lastRowPx is { } previousRow
+            && _lastMeasurementTime is { } previousTime
+            && (m.Time - previousTime).TotalMinutes <= _options.BasisShiftMaxGapMinutes
+            && Math.Abs(basisPx - previousBasis) >= _options.BasisShiftMinPx
+            && Math.Abs(m.DoughTopPx - previousRow) <= Math.Abs(basisPx - previousBasis) * 0.3
+            && RebaseBasis(basisPx - previousBasis) is { } shifted)
+            baseline = shifted;
 
         // Confirm feeding/handling on raw heights before the median can blend the
         // discontinuity into otherwise valid fermentation samples and their rate.
@@ -153,6 +173,8 @@ public sealed class RiseAnalyzer
         var smoothedHeightPx = Smooth(m.DoughHeightPx);
         _lastAcceptedHeightPx = smoothedHeightPx;
         _lastMeasurementTime = m.Time;
+        _lastBasisPx = m.DoughFloorPx ?? m.JarBottomPx;
+        _lastRowPx = m.DoughTopPx;
         var risePercent = (smoothedHeightPx - baseline) / baseline * 100.0;
         _samples.Add(new Sample(m.Time, risePercent, rawRisePercent));
         var rateSample = ComputeRate(m.Time);
@@ -508,14 +530,26 @@ public sealed class RiseAnalyzer
 
     /// <summary>Re-expresses the running session against the dough floor, which lies
     /// <paramref name="offsetPx"/> above the glass bottom the baseline was measured from. Heights
-    /// shrink by the offset, so every stored rise percentage and slope scales by
-    /// baseline / (baseline - offset). Returns the new baseline, or null when the offset is
-    /// implausible (the session then restarts).</summary>
+    /// shrink by the offset. Returns the new baseline, or null when the offset is implausible (the
+    /// session then restarts).</summary>
     private double? RebaseToDoughFloor(double offsetPx)
     {
         if (_baselineDoughHeightPx is not { } baseline) return null;
-        var rebased = baseline - offsetPx;
-        if (offsetPx < 0 || rebased < baseline * 0.5) return null;
+        if (offsetPx < 0 || baseline - offsetPx < baseline * 0.5) return null;
+        var rebased = RebaseBasis(-offsetPx);
+        _baselineOnDoughFloor = true;
+        return rebased;
+    }
+
+    /// <summary>Re-expresses the running session on a height basis that lies <paramref name="shiftPx"/>
+    /// lower (positive: every height grows by it). A stored rise percentage and slope scale by
+    /// baseline / (baseline + shift): the surface moved by the same pixels, against another base.
+    /// Returns the new baseline, or null when the shift is implausible for the running session.</summary>
+    private double? RebaseBasis(double shiftPx)
+    {
+        if (_baselineDoughHeightPx is not { } baseline) return null;
+        var rebased = baseline + shiftPx;
+        if (rebased < baseline * 0.5 || rebased > baseline * 2) return null;
         var scale = baseline / rebased;
         for (var i = 0; i < _samples.Count; i++)
             _samples[i] = _samples[i] with
@@ -527,14 +561,13 @@ public sealed class RiseAnalyzer
             _slopes[i] = _slopes[i] with { Slope = _slopes[i].Slope * scale };
         _maximumSlope *= scale;
         _peakReferenceRisePercent *= scale;
-        var window = _heightWindow.Select(height => height - offsetPx).ToArray();
+        var window = _heightWindow.Select(height => height + shiftPx).ToArray();
         _heightWindow.Clear();
         foreach (var height in window) _heightWindow.Enqueue(height);
-        _lastAcceptedHeightPx -= offsetPx;
+        _lastAcceptedHeightPx += shiftPx;
         _pendingCollapseHeights?.Clear();
         _startHeights.Clear();
         _baselineDoughHeightPx = rebased;
-        _baselineOnDoughFloor = true;
         return rebased;
     }
 
@@ -553,6 +586,8 @@ public sealed class RiseAnalyzer
         _maximumSlope = 0;
         _lastAcceptedHeightPx = null;
         _lastMeasurementTime = null;
+        _lastBasisPx = null;
+        _lastRowPx = null;
         _implausibleStreak = 0;
         _lastPublishedEta = null;
         _recentForecasts.Clear();

@@ -87,4 +87,38 @@ public class RiseAnalyzerSessionStartTests
 
         Assert.False(analyzer.Analyze(Height(12 * 12 + 11 * 12 + 1, 112))!.NewSession);
     }
+
+    /// <summary>Surface row 300 falling by 0.4 px per step (a slow rise), against a basis that the
+    /// detector re-estimates from 400 to 430 px after step 12.</summary>
+    private static LevelMeasurement OnBasis(int step, double basisPx) =>
+        new(Start.AddMinutes(step * 5), 300 - 0.4 * step, 0, basisPx);
+
+    [Fact]
+    public void BasisReEstimatedAtAConstantSurface_IsNotCountedAsRise()
+    {
+        var shifted = NewAnalyzer();
+        var steady = NewAnalyzer();
+        RiseReading? last = null, reference = null;
+        for (var step = 0; step < 30; step++)
+        {
+            reference = steady.Analyze(OnBasis(step, 430));   // the basis the shifted run only learns later
+            last = shifted.Analyze(OnBasis(step, step < 12 ? 400 : 430));
+        }
+
+        Assert.NotNull(last);
+        // Without the rebase the 30 px step reads about +30 %; on the true basis the dough rose 11.6 px of 130.
+        Assert.InRange(last!.RisePercent, 7, 11);
+    }
+
+    [Fact]
+    public void SurfaceMovingWithTheBasis_IsNotRebased()
+    {
+        // The whole jar moved 30 px down (camera bump): the surface follows, so the height is unchanged.
+        var analyzer = NewAnalyzer();
+        for (var step = 0; step < 12; step++) analyzer.Analyze(OnBasis(step, 400));
+        var moved = analyzer.Analyze(new LevelMeasurement(Start.AddMinutes(12 * 5), 300 - 0.4 * 12 + 30, 0, 430));
+
+        Assert.NotNull(moved);
+        Assert.InRange(moved!.RisePercent, 0, 5);
+    }
 }

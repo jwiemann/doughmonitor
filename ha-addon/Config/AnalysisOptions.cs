@@ -136,6 +136,18 @@ public sealed class AnalysisOptions
     /// switch produced "absences" of 11 and 12 hours when scattered frames were chained.</summary>
     public double JarRemovedMaxGapMinutes { get; init; } = 15;
 
+    /// <summary>A change of the height basis (dough floor, else glass bottom) of at least this many
+    /// pixels between two measurements that the dough surface does not follow (it moved by at most
+    /// 30 % of the shift) is a re-estimate of the jar, not growth: the session is rebased onto the new
+    /// basis instead of counting the step as rise. Archive 2026-11-09: the basis went 656 to 694 px
+    /// within two hours at a constant surface row, inflating the rise by 13 points.</summary>
+    public double BasisShiftMinPx { get; init; } = 6;
+
+    /// <summary>Longest gap between two measurements across which a basis shift is still attributed
+    /// to a re-estimate (see <see cref="BasisShiftMinPx"/>); after a longer gap the surface may have
+    /// moved unseen.</summary>
+    public double BasisShiftMaxGapMinutes { get; init; } = 30;
+
     /// <summary>Consecutive minutes of <c>no_surface</c> after a confirmed peak before the
     /// loss is reported in the diagnostics: a peaked session whose surface stays invisible
     /// for hours usually means the detector lost the surface (collapse?), not that the

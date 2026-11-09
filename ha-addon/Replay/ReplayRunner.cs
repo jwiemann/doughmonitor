@@ -565,6 +565,8 @@ public static class ReplayRunner
         CollapseMinDropPercentPoints = src.CollapseMinDropPercentPoints,
         JarRemovedMinutes = src.JarRemovedMinutes,
         JarRemovedMaxGapMinutes = src.JarRemovedMaxGapMinutes,
+        BasisShiftMinPx = src.BasisShiftMinPx,
+        BasisShiftMaxGapMinutes = src.BasisShiftMaxGapMinutes,
         MinPlausibleHeightPx = src.MinPlausibleHeightPx,
         // Replay must never touch the live addon session state file.
         StateFilePath = null
