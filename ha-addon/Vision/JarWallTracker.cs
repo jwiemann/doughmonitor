@@ -51,10 +51,16 @@ public sealed class JarWallTracker
     /// are never reported.</summary>
     public JarWalls? Confident { get; private set; }
 
+    /// <summary>The most recent fit whatever its score: too unreliable to trust as the jar, but
+    /// close enough (a few tens of pixels) to tell <see cref="JarGeometryEstimator"/> where to
+    /// look for the wall.</summary>
+    public JarWalls? Latest { get; private set; }
+
     public void Reset()
     {
         _radons.Clear();
         Confident = null;
+        Latest = null;
     }
 
     /// <summary>Adds the frame to the window and refits.</summary>
@@ -71,6 +77,7 @@ public sealed class JarWallTracker
         while (_radons.Count > BufferFrames) _radons.Dequeue();
         if (_radons.Count < MinFrames) return;
         var fit = Fit(QuantileOf(_radons), gray.Width / (double)WorkWidth, workHeight);
+        if (fit is { } latest) Latest = latest with { Frames = _radons.Count };
         if (fit is { } walls && walls.Score >= _minScore) Confident = walls with { Frames = _radons.Count };
     }
 

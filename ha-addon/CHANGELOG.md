@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.8
+
+- Tilted jar walls (`JarGeometryEstimator`): the glass walls are measured on the dough silhouette (strongest
+  horizontal gradient per row beside the wall predicted by `JarWallTracker.Latest`, Theil-Sen line per wall, median
+  of the last 24 frames, reported only while the frames agree within 4 px). Works in flat daylight where the
+  tracker's edge score stays under `JarWallMinScore`. The debug image draws the walls at their real angle instead of
+  two vertical lines; the backlit column is taken from the walls at the surface row, and `jar_left_px` /
+  `jar_right_px` in the diagnostics are the walls at the dough surface. The held column history and scene-change
+  detection still use the foot-based column.
+
 ## 0.4.7
 
 - Wall-contact height next to the classic reading (`WallContactMeasurer`, `StableHeightTracker`,

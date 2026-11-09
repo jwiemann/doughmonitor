@@ -164,6 +164,7 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
     private sealed record WallLine(int X, int Top, int Bottom);
 
     private readonly JarWallTracker _walls = new(options.JarWallMinScore);
+    private readonly JarGeometryEstimator _geometry = new();
     private int _frameIndex;
     private int _wallDisagreementFrames;
     private int _lastWallVoteFrame = -1;
@@ -171,7 +172,7 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
 
     /// <summary>The jar walls the detector currently believes in (null until a clearly lit
     /// window established them), for diagnostics and tests.</summary>
-    public JarWalls? Walls => _walls.Confident;
+    public JarWalls? Walls => _geometry.Walls ?? _walls.Confident;
 
     /// <summary>The wall edges at the row of the last surface, taking the walls' angle into
     /// account.</summary>
@@ -371,6 +372,7 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
             else
             {
                 _walls.Reset();
+                _geometry.Reset();
                 _recentWarmColumns.Clear();
                 _recentWarmFronts.Clear();
                 _pendingWarmMove.Clear();
@@ -437,8 +439,12 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
                 break;
             }
             var litColumn = foundColumn ?? WallColumn(img.Width, img.Height);
-            var litMeasurement = litColumn is not null
-                ? MeasureBacklit(img, glow, litColumn, now, frameStats, sessionBaselineHeightPx)
+            // The glass walls measured from the dough silhouette replace the foot-based column
+            // for measuring and drawing; the held history keeps the original column so scene
+            // change detection is unaffected.
+            var litMeasureColumn = litColumn is not null ? FitColumnToGeometry(litColumn, img.Height) : null;
+            var litMeasurement = litMeasureColumn is not null
+                ? MeasureBacklit(img, glow, litMeasureColumn, now, frameStats, sessionBaselineHeightPx)
                 : null;
             if (litMeasurement is null
                 && MeasureDarkMassAboveFoot(img, glowCandidates, now, frameStats, sessionBaselineHeightPx) is { } darkMass)
@@ -449,8 +455,8 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
                 LastOutcome = "detected";
                 return darkMass;
             }
-            litMeasurement ??= litColumn is not null && _proposedColumn is null
-                ? MeasureSurfaceContinuity(img, litColumn, now, frameStats, sessionBaselineHeightPx)
+            litMeasurement ??= litMeasureColumn is not null && _proposedColumn is null
+                ? MeasureSurfaceContinuity(img, litMeasureColumn, now, frameStats, sessionBaselineHeightPx)
                 : null;
             if (litMeasurement is not null)
             {
@@ -1896,6 +1902,19 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
         return ys[ys.Count / 2];
     }
 
+    /// <summary>The column with its edges at the surface row taken from the walls measured by
+    /// <see cref="JarGeometryEstimator"/>; unchanged while no model has been established.</summary>
+    private JarColumn FitColumnToGeometry(JarColumn column, int frameHeight)
+    {
+        if (_geometry.Walls is not { } walls || column.Kind is not "backlit") return column;
+        var row = _lastGoodSurface is { } good
+            ? Math.Clamp(good.Row, frameHeight * 0.35, frameHeight * 0.92)
+            : frameHeight * 0.7;
+        var left = (int)Math.Round(walls.LeftAt(row));
+        var right = (int)Math.Round(walls.RightAt(row));
+        return right - left < 12 ? column : column with { Left = left, Right = right };
+    }
+
     private void SaveDebugImage(
         Mat image,
         JarColumn? jarColumn,
@@ -1907,12 +1926,16 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
         IReadOnlyList<Point>? surfaceCurve = null)
     {
         LastDebugImagePath = null;
+        if (doughSurfaceY is { } observedSurface && jarBottomY is { } observedFloor)
+            _geometry.Observe(image, observedSurface, observedFloor, _walls.Latest);
         if (LastDiagnostics is { } diagnostics)
         {
             LastDiagnostics = diagnostics with
             {
-                JarLeftPx = jarColumn?.Left,
-                JarRightPx = jarColumn?.Right,
+                JarLeftPx = _geometry.Walls is { } measured && doughSurfaceY is { } row
+                    ? (int)Math.Round(measured.LeftAt(row)) : jarColumn?.Left,
+                JarRightPx = _geometry.Walls is { } measuredRight && doughSurfaceY is { } rightRow
+                    ? (int)Math.Round(measuredRight.RightAt(rightRow)) : jarColumn?.Right,
                 JarColumnKind = jarColumn?.Kind
             };
         }
@@ -1930,21 +1953,24 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
         }
         if (jarColumn is not null)
         {
-            // Green = verified jar bounds (Hough walls or warm extent). Orange = fallback
-            // full-frame bounds with no verified walls, so an unverified frame is
-            // recognizable at a glance.
+            // Green = verified jar bounds (measured walls, Hough walls or warm extent). Orange =
+            // fallback full-frame bounds with no verified walls, so an unverified frame is
+            // recognizable at a glance. Measured walls are drawn at their real angle.
             var wallColor = jarColumn.Kind == "fallback" ? new Scalar(0, 165, 255) : Scalar.Green;
             var thickness = jarColumn.Kind == "fallback" ? 1 : 2;
+            var tilted = jarColumn.Kind == "fallback" ? null : _geometry.Walls;
+            double LeftAt(int y) => tilted?.LeftAt(y) ?? jarColumn.Left;
+            double RightAt(int y) => tilted?.RightAt(y) ?? jarColumn.Right;
             Cv2.Line(
                 color,
-                new Point(jarColumn.Left, jarColumn.Top),
-                new Point(jarColumn.Left, jarColumn.Bottom),
+                new Point((int)Math.Round(LeftAt(jarColumn.Top)), jarColumn.Top),
+                new Point((int)Math.Round(LeftAt(jarColumn.Bottom)), jarColumn.Bottom),
                 wallColor,
                 thickness);
             Cv2.Line(
                 color,
-                new Point(jarColumn.Right, jarColumn.Top),
-                new Point(jarColumn.Right, jarColumn.Bottom),
+                new Point((int)Math.Round(RightAt(jarColumn.Top)), jarColumn.Top),
+                new Point((int)Math.Round(RightAt(jarColumn.Bottom)), jarColumn.Bottom),
                 wallColor,
                 thickness);
         }
