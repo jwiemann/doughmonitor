@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.19
+
+- Left wall line too far inside the glass: the texture edge is the glass wall's inner face, seen from the camera's
+  side the wall has a visible thickness of about 10 px. Per wall side the model now measures the gap between the
+  texture edge and the strongest edge outside it (the silhouette against the wall), takes the value most rows agree
+  on, and moves the line out by its median over the recent frames. Without a clear group (the right wall of this
+  jar) the gap stays 0. Replay of the 2026-11-09 evening frames: left line on the outer glass edge, right
+  unchanged.
+
 ## 0.4.18
 
 - Wall lines for a jar with a lamp or other glow behind it (2026-11-09 evening, the Saatenbrot sample): the wall fit

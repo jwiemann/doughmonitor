@@ -32,6 +32,8 @@ public sealed class JarGeometryEstimator
     private const double MaxTextureSlope = 0.15;
     private const double MinTextureEnergy = 2.5;
     private const double TextureRatio = 3.0;
+    private const int SilhouetteReach = 28;
+    private const double MinSilhouetteGradient = 14;
 
     private readonly Queue<(double LeftTop, double LeftBottom, double RightTop, double RightBottom)> _history = new();
     private int _frameHeight;
@@ -39,6 +41,8 @@ public sealed class JarGeometryEstimator
     /// <summary>A frame this far from the model's median at the top reference row counts as a moved jar.</summary>
     private const double MovedPx = 15;
     private readonly Queue<int> _tops = new();
+    private readonly Queue<double> _leftGaps = new();
+    private readonly Queue<double> _rightGaps = new();
     /// <summary>Jump of the row mean over six rows that marks the rim.</summary>
     private const double RimJump = 25;
 
@@ -53,6 +57,8 @@ public sealed class JarGeometryEstimator
     {
         _history.Clear();
         _tops.Clear();
+        _leftGaps.Clear();
+        _rightGaps.Clear();
         Walls = null;
         TopRow = null;
     }
@@ -117,11 +123,25 @@ public sealed class JarGeometryEstimator
         if (textureTo - textureFrom >= height / 8)
         {
             using var detail = DetailEnergy(gray);
+            // The silhouette of a single row is noisy; the gap between the texture edge and the
+            // silhouette (the glass wall's thickness as seen from the camera) is applied to the model as a whole.
+            var leftGaps = new List<double>();
+            var rightGaps = new List<double>();
             for (var y = textureFrom; y <= textureTo; y += RowStep)
             {
-                if (TextureEdgeNear(detail, y, prior.LeftAt(y), outerIsLeft: true) is { } l) leftTexture.Add((y, l + OutwardPx));
-                if (TextureEdgeNear(detail, y, prior.RightAt(y), outerIsLeft: false) is { } r) rightTexture.Add((y, r - OutwardPx));
+                if (TextureEdgeNear(detail, y, prior.LeftAt(y), outerIsLeft: true) is { } l)
+                {
+                    leftTexture.Add((y, l + OutwardPx));
+                    if (OuterSilhouette(gray, y, l, towardsLeft: true) is { } outer) leftGaps.Add(l - outer);
+                }
+                if (TextureEdgeNear(detail, y, prior.RightAt(y), outerIsLeft: false) is { } r)
+                {
+                    rightTexture.Add((y, r - OutwardPx));
+                    if (OuterSilhouette(gray, y, r, towardsLeft: false) is { } outer) rightGaps.Add(outer - r);
+                }
             }
+            Remember(_leftGaps, leftGaps);
+            Remember(_rightGaps, rightGaps);
         }
         // The dough edge sits inside the glass wall, by more than OutwardPx on a thick-walled jar,
         // so mixing both kinds of points bends the line. The texture points alone mark the outer
@@ -190,8 +210,8 @@ public sealed class JarGeometryEstimator
         var leftSlope = (Median(lb) - Median(lt)) / span;
         var rightSlope = (Median(rb) - Median(rt)) / span;
         return new JarWalls(
-            Median(lt) + leftSlope * (refY - height * TopRef), leftSlope,
-            Median(rt) + rightSlope * (refY - height * TopRef), rightSlope,
+            Median(lt) + leftSlope * (refY - height * TopRef) - MedianGap(_leftGaps), leftSlope,
+            Median(rt) + rightSlope * (refY - height * TopRef) + MedianGap(_rightGaps), rightSlope,
             refY, 1.0, _history.Count);
     }
 
@@ -219,6 +239,33 @@ public sealed class JarGeometryEstimator
             bestX = i;
         }
         return best >= MinEdgeStrength && bestX >= 0 ? x0 + bestX : null;
+    }
+
+    /// <summary>The texture edge is where the glass interior turns smooth; on a thick glass wall seen from
+    /// the side that is the wall's inner face. The outer face, the silhouette against the wall, is the
+    /// strongest horizontal gradient within <see cref="SilhouetteReach"/> outwards of it; the texture edge
+    /// is not reported when nothing stands out.</summary>
+    private static double? OuterSilhouette(Mat gray, int y, double textureEdge, bool towardsLeft)
+    {
+        var from = (int)Math.Round(textureEdge) - (towardsLeft ? SilhouetteReach : 0);
+        var to = (int)Math.Round(textureEdge) + (towardsLeft ? 0 : SilhouetteReach);
+        if (from < 6 || to >= gray.Width - 6 || y < 7 || y >= gray.Height - 7) return null;
+        double Column(int x)
+        {
+            var sum = 0;
+            for (var dy = -6; dy <= 6; dy++) sum += gray.At<byte>(y + dy, x);
+            return sum / 13.0;
+        }
+        var best = 0.0;
+        var bestX = (double)from;
+        for (var x = from; x <= to; x++)
+        {
+            var gradient = Math.Abs((Column(x + 2) + Column(x + 3) + Column(x + 4)) / 3 - (Column(x - 4) + Column(x - 3) + Column(x - 2)) / 3);
+            if (gradient <= best) continue;
+            best = gradient;
+            bestX = x;
+        }
+        return best >= MinSilhouetteGradient ? bestX : null;
     }
 
     /// <summary>Per-pixel fine-detail energy |frame − blurred frame|: high on a textured wall
@@ -263,6 +310,31 @@ public sealed class JarGeometryEstimator
         }
         return bestX >= 0 ? bestX : null;
     }
+
+    /// <summary>Queues the gap between texture edge and silhouette that most rows agree on (the median of the
+    /// largest group within 4 px, at least a third of the rows and eight of them); rows whose silhouette is not
+    /// clear scatter, so without a clear group the wall has no measurable thickness and 0 is queued.</summary>
+    private static void Remember(Queue<double> history, List<double> gaps)
+    {
+        if (gaps.Count < 8) return;
+        gaps.Sort();
+        var bestStart = 0;
+        var bestCount = 0;
+        for (var i = 0; i < gaps.Count; i++)
+        {
+            var count = 0;
+            while (i + count < gaps.Count && gaps[i + count] - gaps[i] <= 4) count++;
+            if (count <= bestCount) continue;
+            bestCount = count;
+            bestStart = i;
+        }
+        var gap = bestCount >= Math.Max(8, gaps.Count / 3.0) ? gaps[bestStart + bestCount / 2] : 0;
+        history.Enqueue(Math.Clamp(gap, 0, SilhouetteReach));
+        while (history.Count > History) history.Dequeue();
+    }
+
+    private static double MedianGap(Queue<double> history) =>
+        history.Count == 0 ? 0 : history.OrderBy(v => v).ElementAt(history.Count / 2);
 
     private static double Span(List<(double Y, double X)> points) =>
         points.Count == 0 ? 0 : points.Max(p => p.Y) - points.Min(p => p.Y);
