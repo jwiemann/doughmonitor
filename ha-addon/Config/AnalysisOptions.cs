@@ -111,6 +111,19 @@ public sealed class AnalysisOptions
     /// instead of reverting on the next sample.</summary>
     public int CollapseConfirmSamples { get; init; } = 3;
 
+    /// <summary>The rise median of the last samples must exceed the new rise by at least this
+    /// many percentage points for the relative drop to count as a collapse (see
+    /// <see cref="ResetDropFraction"/>). Without it a wobble from +26 % to +17 % was a "collapse"
+    /// and restarted the session (archive 2026-10: five sessions in eight hours on one jar);
+    /// real feeding or punching down drops the rise by far more.</summary>
+    public double CollapseMinDropPercentPoints { get; init; } = 25;
+
+    /// <summary>Dough heights below this many pixels are detection failures (the archive has
+    /// 2 to 11 px readings from a lost surface), not dough: such a measurement is unavailable
+    /// and can neither start a session nor trigger a collapse. A session started on 11 px made
+    /// the next one read +2064 %.</summary>
+    public double MinPlausibleHeightPx { get; init; } = 30;
+
     /// <summary>Consecutive minutes of <c>no_surface</c> after a confirmed peak before the
     /// loss is reported in the diagnostics: a peaked session whose surface stays invisible
     /// for hours usually means the detector lost the surface (collapse?), not that the

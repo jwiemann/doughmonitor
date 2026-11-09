@@ -180,8 +180,19 @@ public static class ReplayRunner
             wallHeight.Reset();
         };
 
+        var progressClock = System.Diagnostics.Stopwatch.StartNew();
+        var processed = 0;
         foreach (var frame in frames)
         {
+            if (processed > 0 && processed % 250 == 0)
+            {
+                var eta = TimeSpan.FromSeconds(
+                    progressClock.Elapsed.TotalSeconds / processed * (frames.Count - processed));
+                Console.Error.WriteLine(
+                    $"Progress: {processed}/{frames.Count} frames ({100.0 * processed / frames.Count:F0} %), "
+                    + $"at {frame.Time:yyyy-MM-dd HH:mm}, elapsed {progressClock.Elapsed:hh\\:mm\\:ss}, ETA {eta:hh\\:mm\\:ss}");
+            }
+            processed++;
             currentFrame = frame;
             byte[] bytes;
             try
@@ -250,7 +261,8 @@ public static class ReplayRunner
                     HeightSource.ApexOnly => "apex_only",
                     HeightSource.WallAndDome => "wall_and_dome",
                     _ => "none",
-                }));
+                },
+                SessionReason: reading?.NewSession == true ? riseAnalyzer.LastSessionStartReason ?? "" : ""));
         }
 
         var methodCounts = rows
@@ -352,7 +364,7 @@ public static class ReplayRunner
             + "band_top_row,final_row,dough_top_px,jar_top_px,jar_bottom_px,jar_left_px,jar_right_px,jar_column_kind,dough_height_px,dough_floor_px,"
             + "reading,rise_percent,rise_rate_pct_per_h,predicted_peak_percent,"
             + "predicted_peak_time,predicted_peak_time_low,predicted_peak_time_high,peaked,new_session,debug_image,"
-            + "dome_top_row,dome_source,wall_left_row,wall_right_row,wall_level_row,stable_height_row,height_source");
+            + "dome_top_row,dome_source,wall_left_row,wall_right_row,wall_level_row,stable_height_row,height_source,session_reason");
         foreach (var r in rows)
         {
             sb.AppendLine(string.Join(
@@ -393,7 +405,8 @@ public static class ReplayRunner
                 N(r.WallRightRow),
                 N(r.WallLevelRow),
                 N(r.StableHeightRow),
-                r.HeightSource));
+                r.HeightSource,
+                Csv(r.SessionReason)));
         }
         File.WriteAllText(path, sb.ToString());
     }
@@ -546,6 +559,8 @@ public static class ReplayRunner
         JitterTolerancePx = src.JitterTolerancePx,
         MaxImplausibleJumpRejects = src.MaxImplausibleJumpRejects,
         CollapseConfirmSamples = src.CollapseConfirmSamples,
+        CollapseMinDropPercentPoints = src.CollapseMinDropPercentPoints,
+        MinPlausibleHeightPx = src.MinPlausibleHeightPx,
         // Replay must never touch the live addon session state file.
         StateFilePath = null
     };

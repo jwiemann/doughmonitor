@@ -73,6 +73,7 @@ public sealed class RiseAnalyzer
     public RiseReading? Analyze(LevelMeasurement m)
     {
         if (_lastMeasurementTime is { } lastTime && m.Time <= lastTime) return null;
+        if (m.DoughHeightPx < _options.MinPlausibleHeightPx) return null;
         if (_baselineDoughHeightPx is not { } baseline)
             return StartMeasuredSession(m.Time, m.DoughHeightPx, m.OnDoughFloor, "no active session (after a reset or restart)");
         if (SessionExpired(m.Time))
@@ -363,7 +364,9 @@ public sealed class RiseAnalyzer
         var recentMedian = _samples.TakeLast(5)
             .Select(s => s.RisePercent)
             .Median();
-        return recentMedian > 20 && risePercent < recentMedian * (1 - _options.ResetDropFraction);
+        return recentMedian > 20
+            && risePercent < recentMedian * (1 - _options.ResetDropFraction)
+            && recentMedian - risePercent >= _options.CollapseMinDropPercentPoints;
     }
 
     /// <summary>Rise rate (%/h), centred on the middle of the span it was fitted over (a trailing

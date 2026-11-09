@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.10
+
+- Fewer false session restarts, measured by replaying the whole archive (2026-10-01 to 2026-11-09, 26 622 frames):
+  61 sessions before, 54 after; the five-restarts-in-eight-hours chain of 2026-10-10 and the 2-11 px sessions are gone.
+  A relative drop of the rise (e.g. +26 % to +17 %) only counts as a collapse when it is at least
+  `CollapseMinDropPercentPoints` (25) points; heights under `MinPlausibleHeightPx` (30 px) are unavailable and can
+  neither start a session nor trigger a collapse (a session on 11 px made the next one read +2064 %).
+- Replay prints progress with an ETA every 250 frames (stderr) and `readings.csv` gains `session_reason`.
+
 ## 0.4.9
 
 - The rise session and the jar geometry now survive add-on updates: `sourdough_state.json` and `jar_geometry.json`

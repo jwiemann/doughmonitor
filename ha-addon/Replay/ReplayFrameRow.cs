@@ -48,4 +48,6 @@ public sealed record ReplayFrameRow(
     double? WallRightRow = null,
     double? WallLevelRow = null,
     double? StableHeightRow = null,
-    string HeightSource = "");
+    string HeightSource = "",
+    /// <summary>Why the analyzer started a new session on this frame (empty otherwise).</summary>
+    string SessionReason = "");
