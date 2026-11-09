@@ -42,4 +42,49 @@ public class RiseAnalyzerSessionStartTests
         Assert.NotNull(first);
         Assert.True(first!.NewSession);
     }
+
+    private static RiseAnalyzer RunningSession(int steps = 12)
+    {
+        var analyzer = NewAnalyzer();
+        for (var step = 0; step < steps; step++) analyzer.Analyze(Height(step, 100 + step));
+        return analyzer;
+    }
+
+    [Fact]
+    public void JarMissingForTenMinutes_StartsANewSessionWhenItReturns()
+    {
+        var analyzer = RunningSession();
+        analyzer.NoteEmptyScene(Start.AddMinutes(12 * 5));
+        analyzer.NoteEmptyScene(Start.AddMinutes(13 * 5));
+        analyzer.NoteEmptyScene(Start.AddMinutes(14 * 5));
+
+        var back = analyzer.Analyze(Height(15, 223));
+
+        Assert.NotNull(back);
+        Assert.True(back!.NewSession);
+        Assert.Equal("jar removed for 10 min", analyzer.LastSessionStartReason);
+    }
+
+    [Fact]
+    public void ShortAbsence_OrOneEndedByAMeasurement_KeepsTheSession()
+    {
+        var analyzer = RunningSession();
+        analyzer.NoteEmptyScene(Start.AddMinutes(12 * 5));
+        analyzer.NoteEmptyScene(Start.AddMinutes(13 * 5));           // five minutes only
+        Assert.False(analyzer.Analyze(Height(14, 112))!.NewSession);
+
+        analyzer.NoteEmptyScene(Start.AddMinutes(15 * 5));           // a measurement ended the earlier absence
+        analyzer.NoteEmptyScene(Start.AddMinutes(16 * 5));
+        Assert.False(analyzer.Analyze(Height(17, 115))!.NewSession);
+    }
+
+    [Fact]
+    public void EmptyFramesScatteredOverHours_AreNotOneAbsence()
+    {
+        var analyzer = RunningSession();
+        analyzer.NoteEmptyScene(Start.AddMinutes(12 * 5));
+        analyzer.NoteEmptyScene(Start.AddMinutes(12 * 5 + 11 * 60));  // next morning's flicker, 11 h later
+
+        Assert.False(analyzer.Analyze(Height(12 * 12 + 11 * 12 + 1, 112))!.NewSession);
+    }
 }

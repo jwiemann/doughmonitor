@@ -39,6 +39,19 @@ public sealed class VisionOptions
     /// a dim but uniform frame carries no meaningful contrast for detection. 0 disables.</summary>
     public double MinFrameContrast { get; init; } = 30.0;
 
+    /// <summary>A frame rejected for low contrast whose mean intensity is at least this is a lit,
+    /// uniform scene (an empty shelf: the jar was taken away), not a dark night: its outcome is
+    /// "empty_scene" instead of "dark_frame" so the analyzer can tell that the jar was removed.
+    /// Archive 2026-11-09: the empty shelf reads 76 to 139, nights stay under 25.</summary>
+    public double EmptySceneMinMean { get; init; } = 60.0;
+
+    /// <summary>An "empty_scene" frame must also differ from the last frame that passed the gate:
+    /// its normalised cross-correlation (64x36 thumbnails) stays under this. A jar in flat
+    /// daylight is just as bright and uniform as an empty shelf but stays at 0.85 to 1.0
+    /// (archive 2026-10-12: a false "removed jar" of 13 minutes); the shelf of 2026-11-09 was
+    /// 0.3 to 0.6. Without an earlier frame the outcome stays "dark_frame".</summary>
+    public double EmptySceneMaxSimilarity { get; init; } = 0.65;
+
     /// <summary>Contrast (region above vs. band interior) at which a dark band is trusted
     /// regardless of its length — the backlit case: light through the glass above, opaque
     /// dough below. Calibrated above an observed jar-base false positive (~50).</summary>

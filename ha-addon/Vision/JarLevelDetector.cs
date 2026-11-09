@@ -161,6 +161,31 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
             ? path
             : Path.Combine(AppContext.BaseDirectory, path);
 
+    private float[]? _sceneThumb;
+
+    /// <summary>The frame as a 64x36 thumbnail with zero mean and unit variance: comparable across
+    /// exposure changes, so only the structure of the scene counts.</summary>
+    private static float[] SceneThumb(Mat gray)
+    {
+        using var small = new Mat();
+        Cv2.Resize(gray, small, new Size(64, 36), 0, 0, InterpolationFlags.Area);
+        small.GetArray(out byte[] pixels);
+        var values = new float[pixels.Length];
+        var mean = pixels.Average(p => (double)p);
+        var variance = pixels.Average(p => (p - mean) * (p - mean));
+        var scale = variance > 1e-6 ? 1.0 / Math.Sqrt(variance) : 1.0;
+        for (var i = 0; i < pixels.Length; i++) values[i] = (float)((pixels[i] - mean) * scale);
+        return values;
+    }
+
+    /// <summary>Normalised cross-correlation of two <see cref="SceneThumb"/> thumbnails (1 = same scene).</summary>
+    private static double Similarity(float[] a, float[] b)
+    {
+        var sum = 0.0;
+        for (var i = 0; i < a.Length; i++) sum += a[i] * b[i];
+        return sum / a.Length;
+    }
+
     private sealed record WallLine(int X, int Top, int Bottom);
 
     private readonly JarWallTracker _walls = new(options.JarWallMinScore);
@@ -418,12 +443,21 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
         {
             _pendingWarmMove.Clear();
             _pendingReacquireRows.Clear();
-            LastOutcome = "dark_frame";
+            // Lit and uniform alone is not an empty shelf: a jar in flat daylight looks the same by
+            // contrast. The shelf is empty when the frame no longer resembles the last scene that
+            // passed the gate (the archive's flat-light jar frames correlate at 0.85 to 1.0, the
+            // empty shelf at 0.3 to 0.6).
+            var emptyScene = frameStats.Mean >= options.EmptySceneMinMean
+                && p90 >= options.MinFrameIntensity
+                && _sceneThumb is { } lastScene
+                && Similarity(lastScene, SceneThumb(img)) < options.EmptySceneMaxSimilarity;
+            LastOutcome = emptyScene ? "empty_scene" : "dark_frame";
             LastDiagnostics = WithFrameStats(new DetectionDiagnostics("dark", 0, null, null), frameStats);
             if (options.DebugSaveAnnotatedImages)
                 SaveDebugImage(img, null, null, null, null, now, null);
             return null;
         }
+        _sceneThumb = SceneThumb(img);
         _walls.Update(img);
         var glowFailed = false;
         JarColumn? glowColumn = null;

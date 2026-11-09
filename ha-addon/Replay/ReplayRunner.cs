@@ -213,6 +213,7 @@ public static class ReplayRunner
             var debugImage = (llmDetector?.LastDebugImagePath ?? classicDetector?.LastDebugImagePath) is { } path
                 ? Path.GetRelativePath(Path.GetFullPath(outPath), path)
                 : null;
+            if (detector.LastOutcome == "empty_scene") riseAnalyzer.NoteEmptyScene(frame.Time);
             var reading = measurement is null ? null : riseAnalyzer.Analyze(measurement);
             if (reading is not null)
             {
@@ -514,6 +515,8 @@ public static class ReplayRunner
             JarWallDistrustFrames = src.JarWallDistrustFrames,
             MinFrameIntensity = src.MinFrameIntensity,
             MinFrameContrast = src.MinFrameContrast,
+            EmptySceneMinMean = src.EmptySceneMinMean,
+            EmptySceneMaxSimilarity = src.EmptySceneMaxSimilarity,
             StrongBandContrast = src.StrongBandContrast,
             MinAmbientBandContrast = src.MinAmbientBandContrast,
             DarkBandMaxIntensity = src.DarkBandMaxIntensity,
@@ -560,6 +563,8 @@ public static class ReplayRunner
         MaxImplausibleJumpRejects = src.MaxImplausibleJumpRejects,
         CollapseConfirmSamples = src.CollapseConfirmSamples,
         CollapseMinDropPercentPoints = src.CollapseMinDropPercentPoints,
+        JarRemovedMinutes = src.JarRemovedMinutes,
+        JarRemovedMaxGapMinutes = src.JarRemovedMaxGapMinutes,
         MinPlausibleHeightPx = src.MinPlausibleHeightPx,
         // Replay must never touch the live addon session state file.
         StateFilePath = null

@@ -124,6 +124,18 @@ public sealed class AnalysisOptions
     /// the next one read +2064 %.</summary>
     public double MinPlausibleHeightPx { get; init; } = 30;
 
+    /// <summary>The jar counts as removed when "empty_scene" frames (see
+    /// <see cref="VisionOptions.EmptySceneMinMean"/>) span at least this many minutes without a
+    /// measurement in between; the next measurement then starts a new session (a jar swap or a
+    /// refilled jar is a new dough). Shorter gaps (a hand in front of the camera, a brightness
+    /// flicker at the IR switch) do not.</summary>
+    public double JarRemovedMinutes { get; init; } = 8;
+
+    /// <summary>Empty-scene frames further apart than this many minutes belong to different
+    /// absences (see <see cref="JarRemovedMinutes"/>). The archive's brightness flickers at the IR
+    /// switch produced "absences" of 11 and 12 hours when scattered frames were chained.</summary>
+    public double JarRemovedMaxGapMinutes { get; init; } = 15;
+
     /// <summary>Consecutive minutes of <c>no_surface</c> after a confirmed peak before the
     /// loss is reported in the diagnostics: a peaked session whose surface stays invisible
     /// for hours usually means the detector lost the surface (collapse?), not that the

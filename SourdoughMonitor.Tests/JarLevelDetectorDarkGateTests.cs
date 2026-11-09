@@ -60,14 +60,54 @@ public class JarLevelDetectorDarkGateTests
     }
 
     [Fact]
-    public void Measure_BrightButUniformFrame_RejectedByContrastFloor()
+    public void Measure_LitUniformFrameAfterAJar_IsAnEmptyScene()
     {
-        // All-gray frame: P90 high, but P90-P10 ~ 0 — nothing detectable.
+        // The jar scene, then an all-gray bright frame: P90 high, P90-P10 ~ 0, and nothing like the
+        // frame before: the jar was taken away, it is not night.
+        var detector = new JarLevelDetector(ReplayVisionOptions());
+        Assert.NotNull(detector.Measure(SyntheticJarJpeg(1.0), FixedTime));
+        using var img = new Mat(160, 120, MatType.CV_8UC1, Scalar.All(200));
+        Cv2.ImEncode(".jpg", img, out var bytes);
+
+        Assert.Null(detector.Measure(bytes, FixedTime.AddMinutes(5)));
+        Assert.Equal("empty_scene", detector.LastOutcome);
+    }
+
+    [Fact]
+    public void Measure_JarInFlatLight_IsNotAnEmptyScene()
+    {
+        // The same jar washed out to a bright, low-contrast frame (flat daylight, auto exposure):
+        // as uniform as an empty shelf, but still the same scene.
+        var detector = new JarLevelDetector(ReplayVisionOptions());
+        Assert.NotNull(detector.Measure(SyntheticJarJpeg(1.0), FixedTime));
+        using var flat = new Mat(160, 120, MatType.CV_8UC1);
+        for (var y = 0; y < flat.Rows; y++)
+        for (var x = 0; x < flat.Cols; x++)
+            flat.Set(y, x, (byte)(x is >= 40 and < 80 ? y < 100 ? 140 : 118 : 112));
+        Cv2.ImEncode(".jpg", flat, out var bytes);
+
+        Assert.Null(detector.Measure(bytes, FixedTime.AddMinutes(5)));
+        Assert.Equal("dark_frame", detector.LastOutcome);
+    }
+
+    [Fact]
+    public void Measure_UniformFrameWithoutAnEarlierScene_IsADarkFrame()
+    {
         using var img = new Mat(160, 120, MatType.CV_8UC1, Scalar.All(200));
         Cv2.ImEncode(".jpg", img, out var bytes);
         var detector = new JarLevelDetector(ReplayVisionOptions());
-        var measurement = detector.Measure(bytes, FixedTime);
-        Assert.Null(measurement);
+        Assert.Null(detector.Measure(bytes, FixedTime));
+        Assert.Equal("dark_frame", detector.LastOutcome);
+    }
+
+    [Fact]
+    public void Measure_DimUniformFrame_StaysADarkFrame()
+    {
+        var detector = new JarLevelDetector(ReplayVisionOptions());
+        Assert.NotNull(detector.Measure(SyntheticJarJpeg(1.0), FixedTime));
+        using var img = new Mat(160, 120, MatType.CV_8UC1, Scalar.All(40));
+        Cv2.ImEncode(".jpg", img, out var bytes);
+        Assert.Null(detector.Measure(bytes, FixedTime.AddMinutes(5)));
         Assert.Equal("dark_frame", detector.LastOutcome);
     }
 

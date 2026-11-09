@@ -140,6 +140,7 @@ public sealed class Worker(
             await MarkSilentAsync(ct);
             return;
         }
+        if (detector.LastOutcome == "empty_scene") analyzer.NoteEmptyScene(DateTimeOffset.UtcNow);
 
         try
         {

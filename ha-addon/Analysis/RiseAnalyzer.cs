@@ -70,10 +70,40 @@ public sealed class RiseAnalyzer
         return new RiseReading(now, 0, null, null, null, null, null, false, NewSession: true);
     }
 
+    private DateTimeOffset? _emptyFirst;
+    private DateTimeOffset? _emptyLast;
+
+    /// <summary>Records a frame showing an empty, lit scene (the jar was taken away). The span of
+    /// such frames since the last measurement decides whether the next measurement starts a new
+    /// session (<see cref="AnalysisOptions.JarRemovedMinutes"/>). Frames more than
+    /// <see cref="AnalysisOptions.JarRemovedMaxGapMinutes"/> apart are separate absences: empty
+    /// frames scattered over a night (brightness flicker at the IR switch) are not one absence.</summary>
+    public void NoteEmptyScene(DateTimeOffset time)
+    {
+        if (_emptyLast is { } last && (time - last).TotalMinutes > _options.JarRemovedMaxGapMinutes)
+            _emptyFirst = null;
+        _emptyFirst ??= time;
+        _emptyLast = time;
+    }
+
+    /// <summary>The span of the empty-scene frames since the last measurement when it reaches
+    /// the removal threshold; always clears the record, because a measurement ends the absence.</summary>
+    private double? TakeJarRemovedMinutes()
+    {
+        if (_emptyFirst is not { } first || _emptyLast is not { } last) return null;
+        _emptyFirst = null;
+        _emptyLast = null;
+        var minutes = (last - first).TotalMinutes;
+        return minutes >= _options.JarRemovedMinutes ? minutes : null;
+    }
+
     public RiseReading? Analyze(LevelMeasurement m)
     {
         if (_lastMeasurementTime is { } lastTime && m.Time <= lastTime) return null;
         if (m.DoughHeightPx < _options.MinPlausibleHeightPx) return null;
+        if (TakeJarRemovedMinutes() is { } removedMinutes && _baselineDoughHeightPx is not null)
+            return StartMeasuredSession(m.Time, m.DoughHeightPx, m.OnDoughFloor,
+                $"jar removed for {removedMinutes:F0} min");
         if (_baselineDoughHeightPx is not { } baseline)
             return StartMeasuredSession(m.Time, m.DoughHeightPx, m.OnDoughFloor, "no active session (after a reset or restart)");
         if (SessionExpired(m.Time))

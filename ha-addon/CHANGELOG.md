@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.11
+
+- A removed jar starts a new session. A lit, uniform frame that no longer resembles the last scene (normalised
+  cross-correlation of 64x36 thumbnails under `EmptySceneMaxSimilarity` 0.65) is the new outcome `empty_scene`
+  instead of `dark_frame`; `empty_scene` frames spanning at least `JarRemovedMinutes` (8) without a measurement in
+  between (frames more than `JarRemovedMaxGapMinutes` 15 apart are separate absences) make the next measurement start
+  a session ("jar removed for N min"). Whole-archive replay (2026-10-01 to 2026-11-09): one new session, the jar
+  swap of 2026-11-09 08:12 UTC (empty shelf 07:52-08:02); before, that morning was counted on as +222 to +370 %
+  of the previous session. A jar in flat daylight (2026-10-12) correlates at 0.85-1.0 and is not an absence.
+
 ## 0.4.10
 
 - Fewer false session restarts, measured by replaying the whole archive (2026-10-01 to 2026-11-09, 26 622 frames):
