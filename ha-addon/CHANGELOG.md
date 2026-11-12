@@ -1,14 +1,12 @@
 # Changelog
 
-## 0.4.20
+## 0.4.21
 
-- Rise stuck at 0 % after a re-feed: the freshly stirred feed holds froth. On 2026-11-12 the surface stood at
-  360 px at the reset, sank to 402 px within 40 minutes (-16 %) and then rose again. The session baseline stayed
-  at the froth level, so the rise was negative (published as 0 %) and the sunk readings were rejected as
-  implausible jumps ("no usable measurement for 10 min"). In the first 90 minutes of a session
-  (`SettleFallMinutes`) a fall of the surface now lowers the baseline to the sunk level instead of being gated;
-  a fall of 25 % or more still restarts the session as a re-feed.
-
+- Reverts 0.4.20 (baseline follows a sinking feed). Its premise was wrong: the 2026-11-12 "sink" from 360 to 402 px
+  was the detector switching between the top of the pale foam layer (about 360 px, the real surface) and the brown
+  dough body below it (about 400 px) with the daylight, not the dough settling. Lowering the baseline to the lower
+  reading would have inflated the rise once the detector returned to the foam top. Open: the same frame reads
+  surface 387 / bottom 661 px in daylight and 367 / 692 px backlit (about 50 px of height, 17 %).
 ## 0.4.19
 
 - Left wall line too far inside the glass: the texture edge is the glass wall's inner face, seen from the camera's

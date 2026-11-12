@@ -57,14 +57,6 @@ public sealed class AnalysisOptions
     /// readings so far instead of the first reading alone.</summary>
     public double BaselineSettleMinutes { get; init; } = 20;
 
-    /// <summary>Minutes after a session's start during which a fall of the dough surface lowers the
-    /// baseline instead of being gated. A freshly stirred feed holds air and froth: on 2026-11-12 the
-    /// surface stood at 360 px at the reset, sank to 402 px within 40 minutes (-16 %) and rose from
-    /// there. Measured from the froth level the rise stayed at 0 % (negative, clamped) and the sunk
-    /// readings were rejected as implausible jumps. A fall beyond <see cref="ResetDropFraction"/> is
-    /// still a re-feed and restarts the session.</summary>
-    public double SettleFallMinutes { get; init; } = 90;
-
     /// <summary>The rise (%) the user acts on: "doubled" (100 %) is the rule for judging the dough
     /// ready (daily feed 30 g flour + 30 ml water + 3 g starter, bake build 80 + 80 + 8 g). The
     /// analyzer publishes when the rise is expected to reach it. 0 disables it.</summary>

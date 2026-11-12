@@ -140,27 +140,4 @@ public class RiseAnalyzerSessionStartTests
         Assert.NotNull(unfloored);
         Assert.InRange(unfloored!.RisePercent, 15, 40);
     }
-
-    [Fact]
-    public void FeedThatSinksSixteenPercentInTheFirstHour_RisesFromTheSunkLevel()
-    {
-        // 2026-11-12: surface 360 px at the reset (height 262), 402 px (height 220) from the 40th minute on, then growth.
-        var analyzer = NewAnalyzer();
-        var heights = new List<double>();
-        heights.AddRange(Enumerable.Repeat(262.0, 6));                // 30 min at the froth level
-        heights.AddRange(Enumerable.Repeat(220.0, 8));                // sunk
-        for (var h = 221.0; h <= 232; h++) heights.Add(h);            // growth
-
-        RiseReading? last = null;
-        var restarts = 0;
-        for (var step = 0; step < heights.Count; step++)
-        {
-            var reading = analyzer.Analyze(Height(step, heights[step]));
-            if (reading is { NewSession: true } && step > 0) restarts++;
-            last = reading ?? last;
-        }
-
-        Assert.Equal(0, restarts);
-        Assert.InRange(last!.RisePercent, 4, 7);                      // 232 against 220, not 0 % against 262
-    }
 }
