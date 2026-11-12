@@ -171,7 +171,7 @@ public sealed class RiseAnalyzer
                 + $"(baseline {baseline:F0} px, recent rise median {_samples.TakeLast(5).Select(s => s.RisePercent).DefaultIfEmpty(0).Median():F0} %)");
         }
         _pendingCollapseHeights?.Clear();
-        if (IsImplausibleJump(m.DoughHeightPx, m.Time))
+        if (!IsSettlingFall(m.DoughHeightPx, m.Time) && IsImplausibleJump(m.DoughHeightPx, m.Time))
         {
             _implausibleStreak++;
             if (_implausibleStreak <= _options.MaxImplausibleJumpRejects) return null;
@@ -186,6 +186,14 @@ public sealed class RiseAnalyzer
             rawRisePercent = (m.DoughHeightPx - baseline) / baseline * 100.0;
         }
         var smoothedHeightPx = Smooth(m.DoughHeightPx);
+        if (IsSettling(m.Time) && smoothedHeightPx < baseline - _options.JitterTolerancePx)
+        {
+            // The stirred feed has sunk: the lower level is the starting level.
+            _startHeights.Clear();
+            Rebaseline(smoothedHeightPx);
+            baseline = smoothedHeightPx;
+            rawRisePercent = (m.DoughHeightPx - baseline) / baseline * 100.0;
+        }
         _lastAcceptedHeightPx = smoothedHeightPx;
         _lastMeasurementTime = m.Time;
         _lastBasisPx = m.DoughFloorPx ?? m.JarBottomPx;
@@ -533,6 +541,23 @@ public sealed class RiseAnalyzer
         _startHeights.Add(m.DoughHeightPx);
         var settled = _startHeights.Median();
         if (Math.Abs(settled - baseline) < 1e-9) return null;
+        Rebaseline(settled);
+        return settled;
+    }
+
+    private bool IsSettling(DateTimeOffset now) =>
+        (now - _sessionStart).TotalMinutes <= _options.SettleFallMinutes;
+
+    /// <summary>A reading below the last accepted level during the settling phase of a session:
+    /// the froth of a fresh feed collapsing, which the fall limit of the jump gate would reject.</summary>
+    private bool IsSettlingFall(double rawHeightPx, DateTimeOffset now) =>
+        IsSettling(now) && _lastAcceptedHeightPx is { } last && rawHeightPx < last;
+
+    /// <summary>Moves the session baseline to <paramref name="settled"/> keeping every recorded height:
+    /// rises, rates and the peak reference are re-expressed against the new baseline.</summary>
+    private void Rebaseline(double settled)
+    {
+        var baseline = _baselineDoughHeightPx!.Value;
         var factor = baseline / settled;
         double Rescale(double risePercent) => (risePercent + 100.0) * factor - 100.0;
         for (var i = 0; i < _samples.Count; i++)
@@ -546,7 +571,6 @@ public sealed class RiseAnalyzer
         _maximumSlope *= factor;
         _peakReferenceRisePercent = _peakReferenceRisePercent is { } reference ? Rescale(reference) : null;
         _baselineDoughHeightPx = settled;
-        return settled;
     }
 
     /// <summary>Re-expresses the running session against the dough floor, which lies

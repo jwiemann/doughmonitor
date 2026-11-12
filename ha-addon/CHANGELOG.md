@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.20
+
+- Rise stuck at 0 % after a re-feed: the freshly stirred feed holds froth. On 2026-11-12 the surface stood at
+  360 px at the reset, sank to 402 px within 40 minutes (-16 %) and then rose again. The session baseline stayed
+  at the froth level, so the rise was negative (published as 0 %) and the sunk readings were rejected as
+  implausible jumps ("no usable measurement for 10 min"). In the first 90 minutes of a session
+  (`SettleFallMinutes`) a fall of the surface now lowers the baseline to the sunk level instead of being gated;
+  a fall of 25 % or more still restarts the session as a re-feed.
+
 ## 0.4.19
 
 - Left wall line too far inside the glass: the texture edge is the glass wall's inner face, seen from the camera's
