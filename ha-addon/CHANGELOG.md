@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.24
+
+- Round glass bowl accepted by the LLM detector: the outline plausibility check rejected anything lower than half
+  its width ("jar_shape"); a bowl (width 1000 px, height 450 px in the frame) is lower. Now 0.3. Tested on the
+  2026-11-12 bread bowl (rice-flour dusted glass, cotton cloth on top): level 316 / 314 px on a bright and a dark
+  frame (apex about 290 px), where the classic detector finds no surface.
+
 ## 0.4.23
 
 - Foam-layer surface also on frames whose column is wider than the jar (warm-colour extent): the layer is searched

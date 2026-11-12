@@ -151,7 +151,7 @@ public static class LlmAnnotationInterpreter
         var outline = a.JarOutline.Select(Map).ToList();
         var box = new JarBox(
             outline.Min(p => p.X), outline.Min(p => p.Y), outline.Max(p => p.X), outline.Max(p => p.Y));
-        if (box.Width < 0.08 * crop.Width || box.Height < 0.15 * crop.Height || box.Height < 0.5 * box.Width)
+        if (box.Width < 0.08 * crop.Width || box.Height < 0.15 * crop.Height || box.Height < 0.3 * box.Width)
             return new("llm_rejected", "jar_shape", box, outline, [], null);
 
         if (a.DoughSurface.Count == 0)
