@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.25
+
+- "LLM Detection" switched on right after an add-on update was dropped: the startup replay of the snapshot archive
+  runs on the classic detector and restored the earlier choice (off) at its end, while Home Assistant kept showing
+  the switch as on (2026-11-12: bread bowl measured by the classic detector, no surface for 90 minutes). A request
+  made during the replay is now applied when it ends.
+
 ## 0.4.24
 
 - Round glass bowl accepted by the LLM detector: the outline plausibility check rejected anything lower than half

@@ -32,6 +32,9 @@ public sealed class Worker(
     /// scene change found in the past must not reset the session that was just restored.</summary>
     private bool _warmingUpRestoredSession;
 
+    private volatile bool _backfilling;
+    private bool? _llmRequestedDuringBackfill;
+
     /// <summary>"Bread mode" gates the oven-preheat signal: feeding the daily starter must not warn about an oven.
     /// It is persisted so a restart keeps the choice; the default is off.</summary>
     private bool LoadBreadMode()
@@ -73,9 +76,15 @@ public sealed class Worker(
         };
         mqtt.LlmDetectionRequested += async enabled =>
         {
-            if (detector.LlmEnabled != enabled)
-                logger.LogInformation("Detection switched to {Detector} via MQTT", enabled ? "vision LLM" : "classic image analysis");
-            detector.LlmEnabled = enabled;
+            // The startup backfill runs on the classic detector; a request made meanwhile is applied when it ends
+            // (restoring the earlier choice afterwards would silently drop it, as on 2026-11-12).
+            if (_backfilling) _llmRequestedDuringBackfill = enabled;
+            else
+            {
+                if (detector.LlmEnabled != enabled)
+                    logger.LogInformation("Detection switched to {Detector} via MQTT", enabled ? "vision LLM" : "classic image analysis");
+                detector.LlmEnabled = enabled;
+            }
             await mqtt.PublishLlmDetectionStateAsync(enabled, ct);
         };
         mqtt.BreadModeRequested += async enabled =>
@@ -157,6 +166,8 @@ public sealed class Worker(
         var llmWasEnabled = detector.LlmEnabled;
         try
         {
+            _backfilling = true;
+            _llmRequestedDuringBackfill = null;
             detector.LlmEnabled = false;
             _warmingUpRestoredSession = restored;
             var started = DateTimeOffset.UtcNow;
@@ -178,7 +189,9 @@ public sealed class Worker(
         finally
         {
             _warmingUpRestoredSession = false;
-            detector.LlmEnabled = llmWasEnabled;
+            _backfilling = false;
+            detector.LlmEnabled = _llmRequestedDuringBackfill ?? llmWasEnabled;
+            _llmRequestedDuringBackfill = null;
         }
     }
 
