@@ -85,6 +85,19 @@ public class JarLevelDetectorPhotoTests
         Assert.InRange(measured.JarBottomPx, 620, 654);
     }
 
+    [Theory]
+    [InlineData("foam-layer-day.jpg")]
+    [InlineData("foam-layer-dusk.jpg")]
+    public void PaleFoamLayerOnTheDough_IsTheSurfaceInDaylightAndDusk(string file)
+    {
+        // 2026-11-12, one jar, one position: the pale foam layer (rows 360-395) above the brown body read as
+        // the surface at dusk but as the body's top (about 400) in daylight; the dough had not moved.
+        var detector = NewDetector();
+        var measured = detector.Measure(Frame(file), Start);
+        Assert.NotNull(measured);
+        Assert.InRange(measured!.DoughTopPx, 350, 372);
+    }
+
     [Fact]
     public void PaleDough_DoesNotMeasureTheSaturatedInteriorAsSurface()
     {

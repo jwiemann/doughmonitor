@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.22
+
+- Surface flipped between the pale foam layer and the brown dough body. The jar of 2026-11-12 carries a pale layer
+  (about 35 px) above the brown body; at dusk the detector measured its top (about 360), in daylight the top of the
+  brown body (about 400), so the same dough "sank" by 15 % or "rose" with the light. The surface is now the top of
+  that layer (`FindUpperSurface`, used by the contour trace and the continuity edge): the first row above the edge
+  where the profile exceeds a level 20 % of the way from the brightest glass down to the body, only for a layer of
+  at least 8 % of the dough body height that forms a distinct step (14 grey levels) and a middle level between glass
+  and body. Replay of the day (151 frames): surface 355-361 from 10:41 to 11:53 instead of 360 then 402-389.
+
 ## 0.4.21
 
 - Reverts 0.4.20 (baseline follows a sinking feed). Its premise was wrong: the 2026-11-12 "sink" from 360 to 402 px

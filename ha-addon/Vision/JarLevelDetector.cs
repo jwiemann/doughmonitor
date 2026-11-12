@@ -1261,11 +1261,53 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
             edge = y;
             break;
         }
+        if (FindUpperSurface(profile, edge, bestBelow, Math.Max(20, profile.Length / 10), 0, minContrast, (hi + massRows - bestRow) * 0.08) is { } upper)
+        {
+            edge = upper.Row;
+            mid = upper.Threshold;
+        }
         var dough = 0;
         for (var y = edge + 2; y < edge + 2 + massRows; y++)
             if (profile[y] <= mid) dough++;
         if (dough < massRows * 0.8) return null;
         return (edge, bestStep);
+    }
+
+    /// <summary>The top of a pale layer between the glass above and the dough body below
+    /// <paramref name="edge"/>: the first row above the edge, within <paramref name="maxUp"/> rows, where the
+    /// profile rises above a level 20 % of the way from the brightest glass there down to the body.
+    /// Null when no such layer exists that is at least <paramref name="minLayerRows"/> rows thick (a share of the dough body's height, so the rule does not depend on the image scale).</summary>
+    private static (int Row, double Threshold)? FindUpperSurface(
+        double[] profile, int edge, double body, int maxUp, int lo, double minContrast, double minLayerRows)
+    {
+        var from = Math.Max(Math.Max(lo, 4), edge - maxUp);
+        var to = edge - 6;
+        if (to <= from) return null;
+        var peak = double.MinValue;
+        for (var y = from; y <= to; y++) peak = Math.Max(peak, profile[y]);
+        if (peak - body < minContrast) return null;
+        var threshold = peak - 0.2 * (peak - body);
+        for (var y = edge; y >= from + 3; y--)
+        {
+            if (profile[y] <= threshold || profile[y - 1] <= threshold
+                || profile[y - 2] <= threshold || profile[y - 3] <= threshold) continue;
+            if (edge - y < minLayerRows || y < 10) return null;
+            // A real layer top is a distinct step; a smooth brightness gradient of the glass is not.
+            double above = 0, below = 0;
+            for (var i = 2; i < 10; i++)
+            {
+                above += profile[y - i];
+                below += profile[y + i];
+            }
+            if ((above - below) / 8 < 14) return null;
+            var layer = 0.0;
+            for (var i = y + 2; i < edge - 4; i++) layer += profile[i];
+            layer /= Math.Max(1, edge - 4 - (y + 2));
+            // The layer sits clearly between glass and body, else it is glass shading or body texture.
+            var share = (peak - layer) / (peak - body);
+            return share is >= 0.25 and <= 0.75 ? (y + 1, threshold) : null;
+        }
+        return null;
     }
 
     // Threshold the jar's own profile, not the dark room or LED-lit wall. The surface
@@ -1302,6 +1344,22 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
             }
         }
         if (boundary <= start + maxGap || end - boundary < scaleHeight * 0.08) return null;
+        if (glow is null)
+        {
+            // The dough carries a pale foam layer above its brown body. Otsu splits body from layer
+            // in daylight but layer from glass in dim light, so the surface flipped by the layer's
+            // thickness (2026-11-12: about 35 px). The layer is dough: take its top.
+            var bodyFrom = Math.Max(boundary + 1, end - Math.Max(8, scaleHeight / 20));
+            var bodyLevel = 0.0;
+            for (var y = bodyFrom; y < end; y++) bodyLevel += profile[y];
+            bodyLevel /= end - bodyFrom;
+            if (FindUpperSurface(MovingAverage(profile, 5), boundary, bodyLevel,
+                    Math.Max(20, scaleHeight / 10), start, 18, (end - boundary) * 0.08) is { } upper)
+            {
+                boundary = upper.Row;
+                threshold = (int)Math.Round(upper.Threshold);
+            }
+        }
         var refStart = Math.Max(start, boundary - Math.Max(10, scaleHeight / 30));
         var refEnd = Math.Max(refStart + 1, boundary - Math.Max(2, scaleHeight / 100));
         var reference = 0.0;
