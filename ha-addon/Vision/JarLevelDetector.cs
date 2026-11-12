@@ -1344,20 +1344,27 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
             }
         }
         if (boundary <= start + maxGap || end - boundary < scaleHeight * 0.08) return null;
+        var scanFrom = column.Left + 4;
+        var scanTo = column.Right - 4;
         if (glow is null)
         {
             // The dough carries a pale foam layer above its brown body. Otsu splits body from layer
             // in daylight but layer from glass in dim light, so the surface flipped by the layer's
             // thickness (2026-11-12: about 35 px). The layer is dough: take its top.
+            // The column can be wider than the jar (a warm-colour extent): only its central half is surely jar.
+            using var centreStrip = gray[new Rect(column.Left + width / 4, 0, Math.Max(1, width / 2), gray.Height)];
+            var centre = ReduceRowsMedian(centreStrip);
             var bodyFrom = Math.Max(boundary + 1, end - Math.Max(8, scaleHeight / 20));
             var bodyLevel = 0.0;
-            for (var y = bodyFrom; y < end; y++) bodyLevel += profile[y];
+            for (var y = bodyFrom; y < end; y++) bodyLevel += centre[y];
             bodyLevel /= end - bodyFrom;
-            if (FindUpperSurface(MovingAverage(profile, 5), boundary, bodyLevel,
+            if (FindUpperSurface(MovingAverage(centre, 5), boundary, bodyLevel,
                     Math.Max(20, scaleHeight / 10), start, 18, (end - boundary) * 0.08) is { } upper)
             {
                 boundary = upper.Row;
                 threshold = (int)Math.Round(upper.Threshold);
+                scanFrom = column.Left + width / 4;
+                scanTo = column.Right - width / 4;
             }
         }
         var refStart = Math.Max(start, boundary - Math.Max(10, scaleHeight / 30));
@@ -1378,7 +1385,7 @@ public sealed class JarLevelDetector(VisionOptions options) : IJarDetector
         using var smoothed = new Mat();
         Cv2.Blur(gray, smoothed, new Size(1, Math.Max(3, 2 * (scaleHeight / 288) + 1)));
         var points = new List<Point>(width);
-        for (var x = column.Left + 4; x <= column.Right - 4; x++)
+        for (var x = scanFrom; x <= scanTo; x++)
         {
             gaps = 0;
             var row = -1;

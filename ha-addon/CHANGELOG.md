@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.23
+
+- Foam-layer surface also on frames whose column is wider than the jar (warm-colour extent): the layer is searched
+  and its top traced in the central half of the column only. Replay of 2026-11-12 10:41-11:53 from cold frames:
+  surface 363-369 -> 360, before 408-400 -> 369 -> 360.
+
 ## 0.4.22
 
 - Surface flipped between the pale foam layer and the brown dough body. The jar of 2026-11-12 carries a pale layer
