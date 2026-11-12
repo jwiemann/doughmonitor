@@ -74,6 +74,11 @@ public sealed class LlmOptions
     /// would set a session's start height far too low and inflate every rise percentage.</summary>
     public int MinGeometryFrames { get; init; } = 3;
 
+    /// <summary>Cycles in a row measured from the dough's silhouette alone (no model call) once the jar
+    /// geometry is known and the last level was found; then the model is asked again (12 cycles = one hour at
+    /// five minutes). Also asked at once whenever the silhouette is not clear. 0 asks the model every cycle.</summary>
+    public int SilhouetteCyclesBetweenCalls { get; init; } = 12;
+
     /// <summary>Fraction of the frame size by which the median of the newest outlines may differ
     /// from the older median before it counts as a camera move.</summary>
     public double GeometryJumpFraction { get; init; } = 0.08;

@@ -210,6 +210,29 @@ public class LlmJarDetectorTests
     }
 
     [Fact]
+    public async Task KnownGeometry_MeasuresFromTheSilhouetteWithoutCallingTheModel()
+    {
+        // The 2026-11-12 bread bowl: the model's level (about 316) is off the sharp edge (about 297).
+        const string bowl = "{\"jar_visible\":true,\"jar_outline\":[[110,265],[135,450],[220,680],[350,835],[500,885],"
+                            + "[650,835],[780,680],[865,450],[890,265]],"
+                            + "\"dough_surface\":[[225,540],[350,420],[500,400],[650,420],[775,540]],\"confidence\":0.9}";
+        var frame = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "bowl-dark.jpg"));
+        var client = new FakeClient(new Queue<string>([bowl, bowl, bowl]));
+        var detector = new LlmJarDetector(
+            new VisionOptions { DebugSaveAnnotatedImages = false },
+            new LlmOptions { SamplesPerCycle = 1 },
+            client,
+            NullLogger<LlmJarDetector>.Instance);
+
+        LevelMeasurement? last = null;
+        for (var cycle = 0; cycle < 6; cycle++)
+            last = await detector.MeasureAsync(frame, T0.AddMinutes(5 * cycle), null, CancellationToken.None) ?? last;
+
+        Assert.Equal(3, client.Calls);
+        Assert.InRange(last!.DoughTopPx, 288, 302);
+    }
+
+    [Fact]
     public async Task ThreeSamples_UseTheMedianLevelAndRecordTheSpread()
     {
         var detector = Sampling(Json(480), Json(520), Json(500));

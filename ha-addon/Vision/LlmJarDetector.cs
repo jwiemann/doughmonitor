@@ -50,6 +50,9 @@ public sealed class LlmJarDetector(
     /// Consistently small values mean the extra samples add cost without changing the level.</summary>
     public SampleSpreadStats Spread { get; } = new();
 
+    private double? _lastLevelRow;
+    private int _silhouetteCycles;
+
     public async Task<LevelMeasurement?> MeasureAsync(
         byte[] jpegBytes, DateTimeOffset now, double? sessionBaselineHeightPx, CancellationToken ct)
     {
@@ -79,6 +82,25 @@ public sealed class LlmJarDetector(
             LastOutcome = "dark_frame";
             LastDiagnostics = stats with { Method = "dark" };
             return null;
+        }
+        // The jar does not move between frames and a backlit dough has a sharp edge: between the model's
+        // calls the level is measured from the silhouette alone, within a window around the last level.
+        if (llm.SilhouetteCyclesBetweenCalls > 0 && _boxes.Count >= llm.MinGeometryFrames
+            && _lastLevelRow is { } lastLevel && _silhouetteCycles < llm.SilhouetteCyclesBetweenCalls)
+        {
+            var stableBox = Median(_boxes);
+            if (SilhouetteRefiner.Refine(gray, stableBox, crop.X, crop.Y, lastLevel) is { } silhouette
+                && Math.Abs(silhouette - lastLevel) <= 0.06 * frame.Height
+                && silhouette < stableBox.Bottom)
+            {
+                _silhouetteCycles++;
+                _lastLevelRow = silhouette;
+                logger.LogInformation("Silhouette level {Level:F1} px (no model call, {Cycles}/{Max})",
+                    silhouette, _silhouetteCycles, llm.SilhouetteCyclesBetweenCalls);
+                var viaSilhouette = new LlmInterpretation("detected", null, stableBox, [], [], silhouette);
+                return Finish(frame, crop, now, stats, "detected", null, viaSilhouette, [], 0,
+                    sessionBaselineHeightPx, null, new LevelMeasurement(now, silhouette, stableBox.Top, stableBox.Bottom));
+            }
         }
         var wanted = Math.Max(1, llm.SamplesPerCycle);
         if (BudgetExhausted(wanted))
@@ -130,6 +152,11 @@ public sealed class LlmJarDetector(
         var measurement = consensus.Outcome == "detected"
             ? Accept(consensus, now, out consensus)
             : null;
+        if (measurement is not null)
+        {
+            _lastLevelRow = measurement.DoughTopPx;
+            _silhouetteCycles = 0;
+        }
         if (spread is { } s) Spread.Observe(s, llm.SpreadWarnPx);
         logger.LogInformation(
             "LLM {Model}: {Ok}/{N} samples usable, levels [{Levels}], spread {Spread} px | running spread mean {Mean:F1}, "

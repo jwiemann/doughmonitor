@@ -60,7 +60,16 @@ public sealed class SwitchableDetector : IJarDetector
         var measurement = await detector.MeasureAsync(jpegBytes, now, sessionBaselineHeightPx, ct);
         if (measurement is null) return null;
         if (_lastSource is not null && !ReferenceEquals(_lastSource, detector))
-            _anchorBottomPx ??= _lastBottomPx;
+        {
+            // The held bottom stands only for the same scene: the startup replay of the archive can end on
+            // frames of another jar (2026-11-12: starter jar 634 px held for the bread bowl at 696 px).
+            if (_lastBottomPx is { } held && Math.Abs(measurement.JarBottomPx - held) > 0.06 * measurement.JarBottomPx)
+            {
+                _anchorBottomPx = null;
+                _floorOffsetPx = null;
+            }
+            else _anchorBottomPx ??= _lastBottomPx;
+        }
         if (measurement.DoughFloorPx is { } ownFloor) _floorOffsetPx = measurement.JarBottomPx - ownFloor;
         var bottom = _anchorBottomPx ?? measurement.JarBottomPx;
         // The classic detector's floor stands; the LLM has none, so it gets the last known floor

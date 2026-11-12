@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.27
+
+- Silhouette between model calls: once the jar geometry is known, the level is measured from the dough's
+  silhouette alone (no model call) for 12 cycles in a row (`SilhouetteCyclesBetweenCalls`), then the model is asked
+  again; it is also asked at once whenever the silhouette is not clear or moved by more than 6 % of the frame
+  height. About one call in thirteen instead of three per cycle, about 0.1 USD per day instead of 1.2.
+- Wrong height basis after an update: the startup replay of the archive ended on frames of the old starter jar
+  (bottom 634 px) and the first model measurement of the bread bowl (bottom 696 px) inherited that bottom, so the
+  session of 2026-11-12 18:59 started 62 px too low and showed +26 % for a dough that had risen 4 %. A held bottom
+  is now dropped when the new detector's bottom differs by more than 6 %.
+
 ## 0.4.26
 
 - Silhouette instead of the model's guess for the level: the vision model places the surface of a backlit dough
