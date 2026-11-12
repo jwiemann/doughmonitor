@@ -114,6 +114,9 @@ public sealed class LlmJarDetector(
         else if (usable.Count * 2 > wanted)
         {
             consensus = Consensus(usable);
+            if (consensus.Jar is { } refineJar && consensus.SurfaceRow is { } modelRow
+                && SilhouetteRefiner.Refine(gray, refineJar, crop.X, crop.Y, modelRow) is { } silhouetteRow)
+                consensus = consensus with { SurfaceRow = silhouetteRow };
         }
         else
         {

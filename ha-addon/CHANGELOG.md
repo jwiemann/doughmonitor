@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.26
+
+- Silhouette instead of the model's guess for the level: the vision model places the surface of a backlit dough
+  only to within some pixels (bread bowl 2026-11-12: 304-320 px, one sample 354, for an edge that is sharp to one
+  pixel). After the model has found the jar and the rough level, the level now snaps to the strongest light-to-dark
+  step within +-12 % of the frame height around it (7 strips over the central 60 % of the jar, at least 4 must
+  agree; the body must be at most 80 % as bright as the glass above). With no such step the model's level stays.
+  Replay of 33 evening frames: 293-300 px (before 304-354).
+
 ## 0.4.25
 
 - "LLM Detection" switched on right after an add-on update was dropped: the startup replay of the snapshot archive
