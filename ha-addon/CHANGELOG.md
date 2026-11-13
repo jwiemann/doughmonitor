@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.28
+
+- Moved camera went unnoticed during silhouette cycles: the geometry is only refreshed by model calls, which
+  are one per hour in silhouette mode, so after the camera was lowered by 66 px overnight (2026-11-13) the held
+  bottom (637 px, now 703) and the height basis stayed. The row of the brightest band in the lower frame (the lit
+  base ring) is now compared with its value at the last model call; a shift of more than 3 % of the frame height
+  makes every cycle ask the model until the geometry follows (scene change, new session). Replay of the night:
+  bottom 636 -> 695 px by 05:36, new session at 05:41.
+
 ## 0.4.27
 
 - Silhouette between model calls: once the jar geometry is known, the level is measured from the dough's

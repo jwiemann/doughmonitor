@@ -50,6 +50,34 @@ public sealed class LlmJarDetector(
     /// Consistently small values mean the extra samples add cost without changing the level.</summary>
     public SampleSpreadStats Spread { get; } = new();
 
+    private int? _rimRow;
+
+    /// <summary>Row of the brightest horizontal band in the lower part of the frame (the lit base ring of a glass
+    /// bowl, the shelf edge otherwise): only compared with the same measure at the last model call, to notice a
+    /// moved camera or bowl without asking the model (2026-11-13: camera lowered by 66 px overnight while the
+    /// geometry of the evening stayed).</summary>
+    private static int RimRow(Mat gray)
+    {
+        var from = (int)(gray.Height * 0.55);
+        using var band = gray[new Rect(gray.Width * 3 / 10, from, gray.Width * 4 / 10, gray.Height - from)];
+        using var rows = new Mat();
+        Cv2.Reduce(band, rows, ReduceDimension.Column, ReduceTypes.Avg, MatType.CV_32F);
+        rows.GetArray(out float[] values);
+        var smooth = new double[values.Length];
+        for (var i = 0; i < values.Length; i++)
+        {
+            double sum = 0; var n = 0;
+            for (var k = Math.Max(0, i - 4); k <= Math.Min(values.Length - 1, i + 4); k++) { sum += values[k]; n++; }
+            smooth[i] = sum / n;
+        }
+        var best = 0;
+        for (var i = 1; i < smooth.Length; i++) if (smooth[i] > smooth[best]) best = i;
+        return from + best;
+    }
+
+    private bool RimMoved(Mat gray) =>
+        _rimRow is { } known && Math.Abs(RimRow(gray) - known) > 0.03 * gray.Height;
+
     private double? _lastLevelRow;
     private int _silhouetteCycles;
 
@@ -86,7 +114,8 @@ public sealed class LlmJarDetector(
         // The jar does not move between frames and a backlit dough has a sharp edge: between the model's
         // calls the level is measured from the silhouette alone, within a window around the last level.
         if (llm.SilhouetteCyclesBetweenCalls > 0 && _boxes.Count >= llm.MinGeometryFrames
-            && _lastLevelRow is { } lastLevel && _silhouetteCycles < llm.SilhouetteCyclesBetweenCalls)
+            && _lastLevelRow is { } lastLevel && _silhouetteCycles < llm.SilhouetteCyclesBetweenCalls
+            && !RimMoved(gray))
         {
             var stableBox = Median(_boxes);
             if (SilhouetteRefiner.Refine(gray, stableBox, crop.X, crop.Y, lastLevel) is { } silhouette
@@ -155,6 +184,9 @@ public sealed class LlmJarDetector(
         if (measurement is not null)
         {
             _lastLevelRow = measurement.DoughTopPx;
+            // Kept while the bowl moved until the geometry has followed (scene change), so every cycle asks
+            // the model until then; one new outline does not move the median geometry.
+            if (_rimRow is null || !RimMoved(gray)) _rimRow = RimRow(gray);
             _silhouetteCycles = 0;
         }
         if (spread is { } s) Spread.Observe(s, llm.SpreadWarnPx);
@@ -249,6 +281,7 @@ public sealed class LlmJarDetector(
             var recent = _boxes.TakeLast(llm.SceneChangeFrames).ToList();
             _boxes.Clear();
             foreach (var box in recent) _boxes.Enqueue(box);
+            _rimRow = null;
             SceneChanged?.Invoke();
         }
         var stable = Median(_boxes);
