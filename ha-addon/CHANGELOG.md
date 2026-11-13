@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.29
+
+- Bread mode tuned to the spelt seed bread of 2026-11-13 (glass bowl, 23 C: rose +2 %/h to +27 %, plateau from
+  14 h). The starter gates never let such a dough through: no forecast below +30 % and no peak unless the rate had
+  reached 6 %/h (a simulation of its rise never confirmed a peak). In bread mode: target rise 25 % (was 50), peak
+  prior 30 % (was 65), forecast gate 20 % (`BreadMinRisePercentForForecast`) and rate evidence 1.5 %/h
+  (`BreadSlopeEvidencePercentPerHour`); the peak is then confirmed about an hour after the plateau starts. An
+  abrupt stop of a linear rise cannot be forecast, so "Oven Preheat" still comes after the plateau began. Existing
+  installs keep their `bread_target_rise_percent` option (default now 25): set it to 25 in the add-on options.
+
 ## 0.4.28
 
 - Moved camera went unnoticed during silhouette cycles: the geometry is only refreshed by model calls, which

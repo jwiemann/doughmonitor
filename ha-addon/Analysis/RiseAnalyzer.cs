@@ -341,13 +341,16 @@ public sealed class RiseAnalyzer
 
     private sealed record PublishedValues(DateTimeOffset Point, DateTimeOffset Low, DateTimeOffset High, double Rise);
 
-    private double SlopeEvidence => _options.MinSlopeEvidenceSigmas * _options.MaxRateStdErrPercentPerHour;
+    private double SlopeEvidence => BreadMode
+        ? _options.BreadSlopeEvidencePercentPerHour
+        : _options.MinSlopeEvidenceSigmas * _options.MaxRateStdErrPercentPerHour;
 
     /// <summary>A forecast needs evidence that the dough really rose: the prior minimum rise of a
     /// fed jar, and a maximum rate well above the rate's error bound. Whether the rate has already
     /// turned is decided by the forecaster from the shape of the recent rise.</summary>
     private bool ForecastIsInformative() =>
-        _samples[^1].RisePercent >= Math.Max(_options.MinRisePercentForPeak, _options.MinRisePercentForForecast)
+        _samples[^1].RisePercent >= Math.Max(_options.MinRisePercentForPeak,
+            BreadMode ? _options.BreadMinRisePercentForForecast : _options.MinRisePercentForForecast)
         && _slopes.Count > 0
         && _maximumSlope >= SlopeEvidence;
 

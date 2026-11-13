@@ -53,6 +53,15 @@ public sealed class AnalysisOptions
     /// itself confirms (<see cref="MinRisePercentForPeak"/>) is not affected.</summary>
     public double MinRisePercentForForecast { get; init; } = 30;
 
+    /// <summary>The same gate while "Bread Mode" is on: the bread of 2026-11-13 peaked at +27 %, below the
+    /// gate of the starter, and would never have produced a forecast or the oven preheat signal.</summary>
+    public double BreadMinRisePercentForForecast { get; init; } = 20;
+
+    /// <summary>Bread mode: the rate (%/h) the dough must have reached at some point as evidence that it really
+    /// rose, instead of the starter's sigmas times the rate error (6 %/h). The bread of 2026-11-13 never exceeded
+    /// 3 %/h, so no peak was ever confirmed or forecast in the simulation of its rise.</summary>
+    public double BreadSlopeEvidencePercentPerHour { get; init; } = 1.5;
+
     /// <summary>Minutes after a session's start during which its baseline is the median of the
     /// readings so far instead of the first reading alone.</summary>
     public double BaselineSettleMinutes { get; init; } = 20;
@@ -63,8 +72,9 @@ public sealed class AnalysisOptions
     public double TargetRisePercent { get; init; } = 100;
 
     /// <summary>The rise (%) the "Target Rise ETA" counts down to while "Bread Mode" is on: a bread dough is
-    /// baked at about +50 % (spelt gluten is weak, bake before the maximum), not at "doubled". 0 disables it.</summary>
-    public double BreadTargetRisePercent { get; init; } = 50;
+    /// baked at about +25 % (spelt seed bread in a glass bowl at 23 C: plateau from +25..27 % after 14 h on 2026-11-13;
+    /// spelt gluten is weak, bake at the onset of the plateau), not at "doubled". 0 disables it.</summary>
+    public double BreadTargetRisePercent { get; init; } = 25;
 
     /// <summary>Minutes before the forecast peak at which "Oven Preheat" turns on (the baker needs this long
     /// to heat the oven and the pot). It stays on once the peak is confirmed. 0 turns the signal off.</summary>
@@ -156,7 +166,7 @@ public sealed class AnalysisOptions
 
     /// <summary>The same for bread dough (Bread Mode), which is baked before the maximum: the
     /// 2026-10-29 sample peaked at +65 %.</summary>
-    public double BreadPeakPriorPercent { get; init; } = 65;
+    public double BreadPeakPriorPercent { get; init; } = 30;
 
     /// <summary>Spread of the peak prior in log space: 0.35 is a factor 1.4 up and down at one sigma.</summary>
     public double PeakPriorSigma { get; init; } = 0.35;

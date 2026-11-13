@@ -1,6 +1,6 @@
 name: Sourdough Monitor
 url: https://github.com/jwiemann/doughmonitor
-version: "0.4.28"
+version: "0.4.29"
 slug: sourdough_monitor
 description: Monitor sourdough rise from Frigate camera snapshots with MQTT discovery
 arch:
@@ -31,7 +31,7 @@ options:
   llm_samples_per_cycle: 3
   llm_reasoning_effort: "off"
   target_rise_percent: 100
-  bread_target_rise_percent: 50
+  bread_target_rise_percent: 25
   oven_preheat_lead_minutes: 30
 schema:
   frigate_camera: str

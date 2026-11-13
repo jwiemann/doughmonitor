@@ -42,6 +42,32 @@ public class RiseAnalyzerForecastTests
         return new LevelMeasurement(Start.AddHours(hours), 300 - 100 * (1 + rise / 100.0) + 100, 0, 400);
     }
 
+    /// <summary>The spelt seed bread of 2026-11-13 (23 C): +2 %/h for 13.5 h, then the rise stops at +27 %, below
+    /// the 30 % gate and the 6 %/h rate evidence of the starter.</summary>
+    private static LevelMeasurement BreadRise(int step)
+    {
+        var hours = step / 12.0;
+        var rise = 2.0 * Math.Min(hours, 13.5);
+        return new LevelMeasurement(Start.AddHours(hours), 400 - 340 * (1 + rise / 100.0), 0, 400);
+    }
+
+    /// <summary>Hours after the start at which the peak is first confirmed, or null.</summary>
+    private static double? PeakConfirmedAtHour(bool breadMode)
+    {
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null }) { BreadMode = breadMode };
+        for (var step = 0; step <= 12 * 16; step++)
+            if (analyzer.Analyze(BreadRise(step)) is { Peaked: true }) return step / 12.0;
+        return null;
+    }
+
+    [Fact]
+    public void BreadModeConfirmsAPlateauAtPlus27Percent_StarterModeNeverDoes()
+    {
+        // The rise stops at 13.5 h; the peak is confirmed about an hour later (rate span). The bread's rate never reached the starter's 6 %/h evidence.
+        Assert.InRange(PeakConfirmedAtHour(breadMode: true) ?? double.MaxValue, 13.5, 15);
+        Assert.Null(PeakConfirmedAtHour(breadMode: false));
+    }
+
     [Fact]
     public void RateFallingToZero_ForecastsPeakInsideItsRangeBeforeItArrivesThenConfirmsIt()
     {

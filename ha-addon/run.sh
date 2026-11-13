@@ -43,7 +43,7 @@ export Monitor__Llm__ReasoningEffort="$(jq -r '.llm_reasoning_effort // "off"' "
 export Monitor__Llm__DetectionModeFilePath="/data/detection_mode.txt"
 export Monitor__Llm__UsageFilePath="/data/llm_usage.json"
 export Monitor__Analysis__TargetRisePercent="$(jq -r '.target_rise_percent // 100' "$CONFIG_PATH")"
-export Monitor__Analysis__BreadTargetRisePercent="$(jq -r '.bread_target_rise_percent // 50' "$CONFIG_PATH")"
+export Monitor__Analysis__BreadTargetRisePercent="$(jq -r '.bread_target_rise_percent // 25' "$CONFIG_PATH")"
 export Monitor__Analysis__BreadModeFilePath="/data/bread_mode.txt"
 # Session (baseline, samples, peak) and jar geometry must survive add-on updates: relative paths
 # resolve under /app, which is recreated with the image on every update.
