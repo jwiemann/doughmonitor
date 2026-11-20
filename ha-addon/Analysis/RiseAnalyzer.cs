@@ -215,7 +215,13 @@ public sealed class RiseAnalyzer
         if (_peaked) forecast = null;
         DateTimeOffset? eta = null, etaLow = null, etaHigh = null;
         double? peakRise = null;
-        if (!_peaked && Publish(m.Time, forecast) is { } published)
+        // Before the rate has turned the fit stays silent; the reference run of the same dough fills in.
+        // Not passed on to the target estimate: its peak must not cancel the doubling.
+        var shown = forecast;
+        if (shown is null && !_peaked && !BreadMode && _options.ReferenceRunPeakPercent > 0)
+            shown = ReferenceRun.Forecast((m.Time - _sessionStart).TotalHours, risePercent,
+                _options.ReferenceRunPeakPercent, _options.ReferenceRunPeakHours);
+        if (!_peaked && Publish(m.Time, shown) is { } published)
             (eta, etaLow, etaHigh, peakRise) = (published.Point, published.Low, published.High, published.Rise);
         var target = _peaked ? null : TargetCrossing(m.Time, forecast);
         SaveState();

@@ -567,6 +567,8 @@ public static class ReplayRunner
         JarRemovedMaxGapMinutes = src.JarRemovedMaxGapMinutes,
         BasisShiftMinPx = src.BasisShiftMinPx,
         BasisShiftMaxGapMinutes = src.BasisShiftMaxGapMinutes,
+        ReferenceRunPeakPercent = src.ReferenceRunPeakPercent,
+        ReferenceRunPeakHours = src.ReferenceRunPeakHours,
         PeakPriorPercent = src.PeakPriorPercent,
         BreadPeakPriorPercent = src.BreadPeakPriorPercent,
         PeakPriorSigma = src.PeakPriorSigma,

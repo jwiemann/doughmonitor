@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.30
+
+- Peak forecast before the rate has turned: the fitted forecast only spoke after the peak (replay of 2026-11-20:
+  nothing between 08:00 and 15:00 UTC). Now the reference run of that day (fed 07:54, +75 % after 6.9 h, same dough
+  amount and place) fills in: while the rise is flat, time since feeding places the dough on its curve, afterwards
+  its rise. Options `ReferenceRunPeakPercent` (75, 0 = off) and `ReferenceRunPeakHours` (6.9); not used in bread
+  mode and not for the doubling target.
+
 ## 0.4.29
 
 - Bread mode tuned to the spelt seed bread of 2026-11-13 (glass bowl, 23 C: rose +2 %/h to +27 %, plateau from

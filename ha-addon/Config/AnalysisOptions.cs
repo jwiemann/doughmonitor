@@ -164,6 +164,14 @@ public sealed class AnalysisOptions
     /// expects the doubling for a starter.</summary>
     public double PeakPriorPercent { get; init; } = 100;
 
+    /// <summary>Peak of the reference run (<see cref="ReferenceRun"/>) in percent rise, shown as the
+    /// peak forecast of the starter until the fitted forecast takes over. 0 turns the reference off.
+    /// Reference 2026-11-20: +75 % (+77 % at the maximum) on the glass-ring basis.</summary>
+    public double ReferenceRunPeakPercent { get; init; } = 75;
+
+    /// <summary>Hours from feeding to the peak of the reference run.</summary>
+    public double ReferenceRunPeakHours { get; init; } = 6.9;
+
     /// <summary>The same for bread dough (Bread Mode), which is baked before the maximum: the
     /// 2026-10-29 sample peaked at +65 %.</summary>
     public double BreadPeakPriorPercent { get; init; } = 30;

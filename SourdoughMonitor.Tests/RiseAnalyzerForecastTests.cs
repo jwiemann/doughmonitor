@@ -18,7 +18,7 @@ public class RiseAnalyzerForecastTests
     [Fact]
     public void AcceleratingGrowth_DoesNotInventMaximumOrReadyTime()
     {
-        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null });
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null, ReferenceRunPeakPercent = 0 });
         for (var step = 0; step <= 30; step++)
         {
             var reading = analyzer.Analyze(KnownGrowth(step));
@@ -54,7 +54,7 @@ public class RiseAnalyzerForecastTests
     /// <summary>Hours after the start at which the peak is first confirmed, or null.</summary>
     private static double? PeakConfirmedAtHour(bool breadMode)
     {
-        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null }) { BreadMode = breadMode };
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null, ReferenceRunPeakPercent = 0 }) { BreadMode = breadMode };
         for (var step = 0; step <= 12 * 16; step++)
             if (analyzer.Analyze(BreadRise(step)) is { Peaked: true }) return step / 12.0;
         return null;
@@ -71,7 +71,7 @@ public class RiseAnalyzerForecastTests
     [Fact]
     public void RateFallingToZero_ForecastsPeakInsideItsRangeBeforeItArrivesThenConfirmsIt()
     {
-        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null });
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null, ReferenceRunPeakPercent = 0 });
         RiseReading? beforePeak = null;
         RiseReading? last = null;
         for (var step = 0; step <= 12 * 10; step++)
@@ -96,7 +96,7 @@ public class RiseAnalyzerForecastTests
     [Fact]
     public void OvenPreheat_IsOffWhileFarFromThePeak_OnWithinTheLeadTime_AndOnceTheDoughHasPeaked()
     {
-        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null, OvenPreheatLeadMinutes = 30 });
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null, ReferenceRunPeakPercent = 0, OvenPreheatLeadMinutes = 30 });
         var onBeforePeak = false;
         RiseReading? last = null;
         for (var step = 0; step <= 12 * 10; step++)
@@ -138,9 +138,9 @@ public class RiseAnalyzerForecastTests
                 .Count(r => r is { PredictedPeakTime: not null } && r.Time < Start.AddHours(4.2));
         }
 
-        Assert.True(StallForecasts(new AnalysisOptions { StateFilePath = null, MinRisePercentForForecast = 0 }) > 0,
+        Assert.True(StallForecasts(new AnalysisOptions { StateFilePath = null, ReferenceRunPeakPercent = 0, MinRisePercentForForecast = 0 }) > 0,
             "the stall must fool the forecaster without the prior, else this test proves nothing");
-        Assert.Equal(0, StallForecasts(new AnalysisOptions { StateFilePath = null }));
+        Assert.Equal(0, StallForecasts(new AnalysisOptions { StateFilePath = null, ReferenceRunPeakPercent = 0 }));
     }
 
     /// <summary>The measured 2026-10-14 session: fed 14:00 local, five-minute vision-LLM readings
@@ -149,7 +149,7 @@ public class RiseAnalyzerForecastTests
     [Fact]
     public void MeasuredSession_ForecastsOnlyOnceTheRateFell_AndTheRangeHoldsThePeak()
     {
-        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null });
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null, ReferenceRunPeakPercent = 0 });
         var readings = new List<RiseReading>();
         foreach (var line in File.ReadLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "rise_2026-10-14_fed-12h.csv")))
         {
@@ -191,7 +191,7 @@ public class RiseAnalyzerForecastTests
     [Fact]
     public void EveningRefeedPeakingAt60Percent_KeepsAnEtaUntilPeaked()
     {
-        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null });
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null, ReferenceRunPeakPercent = 0 });
         var readings = new List<RiseReading>();
         foreach (var line in File.ReadLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "rise_2026-10-15_evening-refeed.csv")))
         {
@@ -228,7 +228,7 @@ public class RiseAnalyzerForecastTests
     [Fact]
     public void BakeBuild_AnnouncesTheDoublingAccuratelyHoursAhead()
     {
-        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null });
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null, ReferenceRunPeakPercent = 0 });
         var readings = new List<RiseReading>();
         foreach (var line in File.ReadLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "rise_2026-10-15_bake-build.csv")))
         {
@@ -254,7 +254,7 @@ public class RiseAnalyzerForecastTests
     [Fact]
     public void TargetEta_StaysEmptyWhileTheDoughDoesNotRise()
     {
-        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null });
+        var analyzer = new RiseAnalyzer(new AnalysisOptions { StateFilePath = null, ReferenceRunPeakPercent = 0 });
         for (var step = 0; step <= 40; step++)
         {
             var noise = (step * 7 % 5 - 2) * 0.6;
@@ -270,7 +270,7 @@ public class RiseAnalyzerForecastTests
         {
             var analyzer = new RiseAnalyzer(new AnalysisOptions
             {
-                StateFilePath = null,
+                StateFilePath = null, ReferenceRunPeakPercent = 0,
                 BaselineSettleMinutes = 0,
                 TargetRisePercent = 100,
                 BreadTargetRisePercent = 50
