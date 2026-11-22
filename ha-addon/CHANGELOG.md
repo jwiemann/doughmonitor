@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.31
+
+- Bread mode now switches the vision LLM detection on (also after a restart with bread mode on). The classic detector
+  finds no surface in the round glass bowl: on 2026-11-22 the LLM switch was off and the sensors stood on
+  `unknown` from 09:36 UTC, although the LLM detector tracked the dough through the whole night and into daylight
+  (replay: level 405 -> 319 px, within 5 px of a hand measurement).
+
 ## 0.4.30
 
 - Peak forecast before the rate has turned: the fitted forecast only spoke after the peak (replay of 2026-11-20:

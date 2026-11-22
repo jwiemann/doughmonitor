@@ -65,6 +65,20 @@ public sealed class Worker(
         }
     }
 
+    private async Task SetLlmDetectionAsync(bool enabled, string source, CancellationToken ct)
+    {
+        // The startup backfill runs on the classic detector; a request made meanwhile is applied when it ends
+        // (restoring the earlier choice afterwards would silently drop it, as on 2026-11-12).
+        if (_backfilling) _llmRequestedDuringBackfill = enabled;
+        else
+        {
+            if (detector.LlmEnabled != enabled)
+                logger.LogInformation("Detection switched to {Detector} via {Source}", enabled ? "vision LLM" : "classic image analysis", source);
+            detector.LlmEnabled = enabled;
+        }
+        await mqtt.PublishLlmDetectionStateAsync(enabled, ct);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         mqtt.ResetRequested += async () =>
@@ -74,19 +88,7 @@ public sealed class Worker(
             await PublishSessionEndAsync(ct);
             await TrackPublishedAsync(reading, ct);
         };
-        mqtt.LlmDetectionRequested += async enabled =>
-        {
-            // The startup backfill runs on the classic detector; a request made meanwhile is applied when it ends
-            // (restoring the earlier choice afterwards would silently drop it, as on 2026-11-12).
-            if (_backfilling) _llmRequestedDuringBackfill = enabled;
-            else
-            {
-                if (detector.LlmEnabled != enabled)
-                    logger.LogInformation("Detection switched to {Detector} via MQTT", enabled ? "vision LLM" : "classic image analysis");
-                detector.LlmEnabled = enabled;
-            }
-            await mqtt.PublishLlmDetectionStateAsync(enabled, ct);
-        };
+        mqtt.LlmDetectionRequested += enabled => SetLlmDetectionAsync(enabled, "MQTT", ct);
         mqtt.BreadModeRequested += async enabled =>
         {
             logger.LogInformation("Bread mode {State} via MQTT", enabled ? "on" : "off");
@@ -94,11 +96,19 @@ public sealed class Worker(
             analyzer.BreadMode = enabled;
             SaveBreadMode(enabled);
             await mqtt.PublishBreadModeStateAsync(enabled, ct);
+            // The classic detector finds no surface in the round glass bowl of the bread (2026-11-12, 2026-11-22:
+            // "dough not detected" all morning with the LLM switch off), so bread mode brings the vision LLM along.
+            if (enabled && !detector.LlmEnabled) await SetLlmDetectionAsync(true, "bread mode", ct);
             // Apply at once instead of with the next reading, so switching off cancels the signal immediately.
             if (_lastReading is not null) await mqtt.PublishReadingAsync(_lastReading, ct);
         };
         mqtt.BreadMode = LoadBreadMode();
         analyzer.BreadMode = mqtt.BreadMode;
+        if (mqtt.BreadMode && !detector.LlmEnabled)
+        {
+            logger.LogInformation("Bread mode is on: vision LLM detection enabled");
+            detector.LlmEnabled = true;
+        }
         // Geometry changes invalidate the pixel-height baseline. The detector verifies
         // the new jar/base/surface; lighting and sampling-resolution changes retain it.
         detector.SceneChanged += () =>
