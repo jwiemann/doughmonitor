@@ -52,13 +52,57 @@ public sealed class SwitchableDetector : IJarDetector
 
     public byte[]? LatestAnnotatedImageBytes => _current.LatestAnnotatedImageBytes;
 
+    /// <summary>With the switch off, the classic detector measures and the vision LLM steps in only for a frame
+    /// the classic one cannot place (no surface or jar found) or places implausibly (a jump the dough cannot
+    /// make in one cycle, or a surface below the floor): the model then decides. Dark frames are not escalated,
+    /// the model cannot see in the dark either. Off during the startup replay of the archive (cost).</summary>
+    public bool LlmFallback { get; set; } = true;
+
+    private double? _lastTopPx;
+    private DateTimeOffset? _lastTime;
+
+    /// <summary>A surface this far from the last one (share of the dough height, at least 25 px) within
+    /// <see cref="PlausibleGap"/> is not trusted: the dough rises 2 % in five minutes at its fastest.</summary>
+    private const double MaxJumpShare = 0.08;
+    private const double MinJumpPx = 25;
+    private static readonly TimeSpan PlausibleGap = TimeSpan.FromMinutes(30);
+
+    private bool Implausible(LevelMeasurement m, DateTimeOffset now)
+    {
+        if (m.DoughHeightPx <= 0 || m.DoughTopPx < m.JarTopPx) return true;
+        if (_lastTopPx is not { } last || _lastTime is not { } at || now - at > PlausibleGap) return false;
+        return Math.Abs(m.DoughTopPx - last) > Math.Max(MinJumpPx, MaxJumpShare * m.DoughHeightPx);
+    }
+
     public async Task<LevelMeasurement?> MeasureAsync(
         byte[] jpegBytes, DateTimeOffset now, double? sessionBaselineHeightPx, CancellationToken ct)
     {
         var detector = _llmEnabled ? _llm : _classic;
         _current = detector;
         var measurement = await detector.MeasureAsync(jpegBytes, now, sessionBaselineHeightPx, ct);
+        if (!_llmEnabled && LlmFallback)
+        {
+            var outcome = _classic.LastOutcome;
+            var unplaced = measurement is null && outcome is "no_surface" or "no_jar";
+            if (unplaced || (measurement is not null && Implausible(measurement, now)))
+            {
+                try
+                {
+                    var second = await _llm.MeasureAsync(jpegBytes, now, sessionBaselineHeightPx, ct);
+                    if (second is not null)
+                    {
+                        (detector, measurement, _current) = (_llm, second, _llm);
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // No model (no key, budget, network): the classic result stands, as without the fallback.
+                }
+            }
+        }
         if (measurement is null) return null;
+        _lastTopPx = measurement.DoughTopPx;
+        _lastTime = now;
         if (_lastSource is not null && !ReferenceEquals(_lastSource, detector))
         {
             // The held bottom stands only for the same scene: the startup replay of the archive can end on
@@ -90,6 +134,8 @@ public sealed class SwitchableDetector : IJarDetector
         _anchorBottomPx = null;
         _floorOffsetPx = null;
         _lastSource = null;
+        _lastTopPx = null;
+        _lastTime = null;
         _lastBottomPx = null;
         SceneChanged?.Invoke();
     }

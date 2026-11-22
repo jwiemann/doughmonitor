@@ -1,11 +1,13 @@
 # Changelog
 
-## 0.4.31
+## 0.4.32
 
-- Bread mode now switches the vision LLM detection on (also after a restart with bread mode on). The classic detector
-  finds no surface in the round glass bowl: on 2026-11-22 the LLM switch was off and the sensors stood on
-  `unknown` from 09:36 UTC, although the LLM detector tracked the dough through the whole night and into daylight
-  (replay: level 405 -> 319 px, within 5 px of a hand measurement).
+- LLM as referee instead of a mode: with the "LLM Detection" switch off the classic detector measures, and the
+  vision model steps in only for a frame the classic one cannot place (`no_surface`/`no_jar`, e.g. the whole
+  glass bowl of the bread: 27 of 28 frames on 2026-11-22) or places implausibly (a jump above 8 % of the dough
+  height, at least 25 px, within 30 min, or a surface above the jar top). Dark frames are not escalated. During the
+  startup archive replay the fallback is off (cost). Switch on = the model alone, as before. Replaces the 0.4.31
+  coupling of bread mode to the LLM switch.
 
 ## 0.4.30
 
